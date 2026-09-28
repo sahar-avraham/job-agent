@@ -1,0 +1,5 @@
+pydantic>=2
+python-docx>=1.1
+# only for --backend api, which bills per token
+anthropic
+pywin32; sys_platform == "win32"  # PDF export through Word
