@@ -45,6 +45,8 @@ SKILL_DISPLAY = {
 
 # Each project's bullets share the letter of its header id; the first bullet introduces it.
 PROJECTS = [("P", "PH1", "P1"), ("J", "JH1", "J1"), ("A", "AH1", "A1"), ("C", "CH1", "C1")]
+# Printed for every job with at least their first line: the main project and the most recent one.
+ALWAYS_PROJECTS = {"P", "J"}
 EXPERIENCE_HEADER = "ZH1"
 SERVICE_HEADER = "VH1"
 
@@ -71,6 +73,9 @@ class Layout:
 
 
 MAX_COURSES = 4
+# A single course on the line reads like the only good grade, so one choice is paired with the
+# first of these that fits any software role and was not chosen already.
+COURSE_COMPANIONS = ["G3", "G8"]
 
 
 def education_lines(chosen_ids: list[str], facts: dict[str, str]) -> list[str]:
@@ -79,7 +84,12 @@ def education_lines(chosen_ids: list[str], facts: dict[str, str]) -> list[str]:
     Only G lines can appear as courses, and facts.md holds only courses graded 90 or above,
     so a weak grade can never reach the page. With no course chosen, the line is left out.
     """
-    courses = [facts[i] for i in chosen_ids if i.startswith("G") and i in facts][:MAX_COURSES]
+    picked = [i for i in chosen_ids if i.startswith("G") and i in facts][:MAX_COURSES]
+    if len(picked) == 1:
+        companion = next((i for i in COURSE_COMPANIONS if i != picked[0] and i in facts), None)
+        if companion:
+            picked.append(companion)
+    courses = [facts[i] for i in picked]
     lines = [facts["E1"]] if "E1" in facts else []
     if courses:
         lines.append("Selected coursework: " + ", ".join(courses) + ".")
@@ -123,9 +133,9 @@ def build(chosen, facts: dict[str, str]) -> Layout:
     for letter in ranked:
         _, header_id, intro_id = next(p for p in PROJECTS if p[0] == letter)
         bullets = [i for i in picked if i.startswith(letter) and not i.startswith(letter + "H")]
-        # Only the main project is printed unasked. With four projects and one page, the others
-        # appear when the selection wanted them.
-        if not bullets and letter != "P":
+        # The projects in ALWAYS_PROJECTS print unasked. With four projects and one page, the
+        # others appear when the selection wanted them.
+        if not bullets and letter not in ALWAYS_PROJECTS:
             continue
         # The introducing line always leads, so a reader knows what the project is before its details.
         intro = next((i for i in bullets if base_id(i) == intro_id), intro_id)
@@ -153,9 +163,10 @@ def build(chosen, facts: dict[str, str]) -> Layout:
             break
         longest.bullets.pop()
 
-    # Projects before experience every time, since support roles left the search on 2026-09-18
-    # and the previous role no longer leads for any job. lead_with is kept only so old drafts load.
-    order = ["skills", "education", "projects", "experience"]
+    # A short skills list first, so a recruiter sees the stack at once, then the projects, which are
+    # the development evidence, above education. Decided on 2026-09-28; lead_with is kept only so
+    # old drafts load.
+    order = ["skills", "projects", "education", "experience"]
 
     return Layout(
         headline=facts.get(get("headline_id"), ""),
