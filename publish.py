@@ -118,7 +118,8 @@ def scan(folder: pathlib.Path) -> list[str]:
     terms = private_terms()
     problems = []
     for path in sorted(folder.rglob("*")):
-        if not path.is_file():
+        # The repository's own metadata names its owner by design and is not part of the files published.
+        if not path.is_file() or ".git" in path.relative_to(folder).parts:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         rel = path.relative_to(folder)
