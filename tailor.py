@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 import claude_cli
 import cv_layout
+import keywords
 import settings
 import store
 from score_job import MODEL_CLI
@@ -42,7 +43,7 @@ class Tailored(BaseModel):
     summary_ids: list[str] = Field(description="Two or three summary line ids, in the order to print them.")
     experience_ids: list[str] = Field(description="Line ids of the previous role to keep, best first. May be empty for a pure development role.")
     project_ids: list[str] = Field(description="Project line ids to keep, best first, at most seven.")
-    skill_ids: list[str] = Field(description="Skill ids to list, ordered so the ones the posting names come first.")
+    skill_ids: list[str] = Field(description="Skill ids this posting uses or that support the headline; a small core prints anyway, so list only what is relevant.")
     education_ids: list[str] = Field(description="Course ids (G lines) worth listing for this posting, best first, at most four; empty when none fits. The degree and languages print on their own.")
     motivation_ids: list[str] = Field(description="Motivation line ids the cover note draws on, two to four of them.")
     lead_with: Literal["experience", "projects"] = Field(description="Which section to print first, whichever the posting values more.")
@@ -189,6 +190,20 @@ Answer with one JSON object and nothing else, matching this schema exactly:
 """
 
 
+RETRY_NOTE = """
+
+A check of your first answer found that the posting asks for {missed}, which the facts
+cover, but the CV you selected does not mention it. The lines that cover it are {lines}.
+Answer again, bringing in whichever of them fit this posting best, within the same limits.
+Do not bring in anything else for its sake.
+"""
+
+
+def facts_text(facts: dict[str, str]) -> str:
+    """Every fact the candidate has, as one text, for comparing against what a posting asks."""
+    return "\n".join(text for fid, text in facts.items() if fid[0] not in "RW")
+
+
 def load_facts(path: pathlib.Path) -> dict[str, str]:
     """Parse the fact file into id to text, which is the vocabulary everything downstream may use."""
     return {m.group(1): m.group(2).strip() for m in FACT_LINE.finditer(path.read_text(encoding="utf-8"))}
@@ -230,6 +245,21 @@ def tailor(job: dict, facts: dict[str, str], model: str) -> tuple[Tailored, Audi
         raise ValueError(f"the selection referred to ids that do not exist: {', '.join(missing)}")
 
     document = document_text(chosen, facts, job)
+
+    # When the posting asks for something the facts cover but the selection left out, ask once
+    # more, naming the lines that cover it, and keep the second answer only if it covers more.
+    left_out = keywords.coverage(job.get("description") or "", document, facts_text(facts))["missed"]
+    if left_out:
+        lines = sorted({fid for fid, fact in facts.items() if fid[0] in "PJACZ"
+                        and keywords.mentioned(fact) & set(left_out)})
+        retry_text, _ = claude_cli.ask(prompt + RETRY_NOTE.format(
+            missed=", ".join(left_out), lines=", ".join(lines) or "none"), model=model)
+        retry = Tailored.model_validate(claude_cli.extract_json(retry_text))
+        if not unknown_ids(retry, facts):
+            retry_document = document_text(retry, facts, job)
+            still = keywords.coverage(job.get("description") or "", retry_document, facts_text(facts))["missed"]
+            if len(still) < len(left_out):
+                chosen, document = retry, retry_document
     audit_text, _ = claude_cli.ask(
         AUDIT_PROMPT.format(
             facts=facts_block(facts),

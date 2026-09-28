@@ -27,12 +27,17 @@ SKILL_GROUPS = [
     ("Databases", ["K8", "K18"]),
     ("Testing", ["K9"]),
     ("Infrastructure & Tools", ["K10", "K11", "K12", "K13"]),
-    ("Cloud & Virtualization", ["K14"]),
     ("Networking", ["K15"]),
     ("AI and LLM Work", ["K19", "K17"]),
 ]
+# Printed for every job, whatever the selection, as the core a recruiter looks for first.
+# Everything else appears only when the selection names it, so the list reads as what the
+# candidate can be interviewed on for this role rather than everything ever touched.
+# K14, cloud platforms known from the support side, is kept as a fact but never listed:
+# in a skills list it reads as hands-on building, and the summary already says it right.
+CORE_SKILLS = {"K1", "K4", "K8", "K12", "K10"}
 SKILL_DISPLAY = {
-    "K14": "AWS, Azure, VMware",
+    "K13": "Linux",
     # The long forms are written for the model to judge; the skills line needs the short ones.
     "K17": "Claude Code and Gemini for scaffolding, refactoring and code review",
     "K19": "Structured model output against a schema, prompt design, independent verification pass",
@@ -103,9 +108,10 @@ def build(chosen, facts: dict[str, str]) -> Layout:
     """Turn a selection into the fixed layout. Works on the pydantic model or its dict form."""
     get = (lambda k: getattr(chosen, k)) if hasattr(chosen, "headline_id") else chosen.get
 
+    wanted = CORE_SKILLS | set(get("skill_ids") or [])
     skills = []
     for name, ids in SKILL_GROUPS:
-        texts = [SKILL_DISPLAY.get(i, facts[i]) for i in ids if i in facts]
+        texts = [SKILL_DISPLAY.get(i, facts[i]) for i in ids if i in facts and i in wanted]
         if texts:
             skills.append((name, ", ".join(texts)))
 
@@ -127,6 +133,8 @@ def build(chosen, facts: dict[str, str]) -> Layout:
         projects.append(Block(facts.get(header_id, ""), [facts[i] for i in bullets if i in facts]))
 
     role = [i for i in get("experience_ids") if i.startswith("Z") and i in facts and not HEADER.match(i)]
+    # The line that says what the role was leads, as a project's first line does.
+    role = [i for i in role if i == "Z1"] + [i for i in role if i != "Z1"]
     experience = [Block(facts.get(EXPERIENCE_HEADER, ""), [facts[i] for i in role[:MAX_BULLETS["Z"]]])]
     # Military service is one line that every Israeli recruiter looks for, so it is always printed.
     if SERVICE_HEADER in facts:

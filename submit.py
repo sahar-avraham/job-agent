@@ -89,10 +89,13 @@ def compose(job: dict, sender: str, recipient: str, note: str, files: list[pathl
     message["To"] = recipient
     message["Subject"] = subject_for(job)
     message["Message-ID"] = make_msgid(domain=sender.split("@", 1)[1])
-    paragraphs = [p.strip() for p in note.split("\n") if p.strip()]
+    # The address is an application channel, not a person's inbox: it turns the mail into a
+    # candidate the way a web form does, and a form takes the cover letter as its own file. So
+    # the letter goes only in the attachment and the body stays short, and a recruiter never
+    # reads the same letter twice however the system shows the mail.
     signature = "\n".join(p for p in (name, settings.get("CANDIDATE_PHONE")) if p)
-    message.set_content("Hello,\n\n" + "\n\n".join(paragraphs)
-                        + "\n\nMy CV and cover letter are attached.\n\nThank you for your time,\n" + signature)
+    message.set_content(f"Hello,\n\nI'm applying for the {job['title']} position. "
+                        "My CV and cover letter are attached.\n\nThank you for your time,\n" + signature)
     for file in files:
         kind = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         main, sub = kind.split("/", 1)
