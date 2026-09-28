@@ -65,6 +65,40 @@ class Layout:
     order: list[str]  # section names in print order after the summary
 
 
+MAX_COURSES = 4
+
+
+def education_lines(chosen_ids: list[str], facts: dict[str, str]) -> list[str]:
+    """The degree, then the courses chosen for this posting on one line, then languages.
+
+    Only G lines can appear as courses, and facts.md holds only courses graded 90 or above,
+    so a weak grade can never reach the page. With no course chosen, the line is left out.
+    """
+    courses = [facts[i] for i in chosen_ids if i.startswith("G") and i in facts][:MAX_COURSES]
+    lines = [facts["E1"]] if "E1" in facts else []
+    if courses:
+        lines.append("Selected coursework: " + ", ".join(courses) + ".")
+    if "E3" in facts:
+        lines.append(facts["E3"])
+    return lines
+
+
+def base_id(fact_id: str) -> str:
+    """P5a and P5 are two wordings of one fact, and share the base P5."""
+    return fact_id.rstrip("abcdefghijklmnopqrstuvwxyz")
+
+
+def one_wording(ids: list[str]) -> list[str]:
+    """Keep the first wording chosen of each fact, so one claim never appears twice in other words."""
+    seen: set[str] = set()
+    out = []
+    for fact_id in ids:
+        if base_id(fact_id) not in seen:
+            seen.add(base_id(fact_id))
+            out.append(fact_id)
+    return out
+
+
 def build(chosen, facts: dict[str, str]) -> Layout:
     """Turn a selection into the fixed layout. Works on the pydantic model or its dict form."""
     get = (lambda k: getattr(chosen, k)) if hasattr(chosen, "headline_id") else chosen.get
@@ -75,7 +109,7 @@ def build(chosen, facts: dict[str, str]) -> Layout:
         if texts:
             skills.append((name, ", ".join(texts)))
 
-    picked = [i for i in get("project_ids") if i in facts and not HEADER.match(i)]
+    picked = one_wording([i for i in get("project_ids") if i in facts and not HEADER.match(i)])
     letters = [letter for letter, _, _ in PROJECTS]
     # Projects appear in the order the model first mentions them; any it skipped keep their CV order.
     ranked = sorted(letters, key=lambda l: next((n for n, i in enumerate(picked) if i.startswith(l)), 99 + letters.index(l)))
@@ -88,7 +122,8 @@ def build(chosen, facts: dict[str, str]) -> Layout:
         if not bullets and letter != "P":
             continue
         # The introducing line always leads, so a reader knows what the project is before its details.
-        bullets = ([intro_id] + [i for i in bullets if i != intro_id])[:MAX_BULLETS[letter]]
+        intro = next((i for i in bullets if base_id(i) == intro_id), intro_id)
+        bullets = ([intro] + [i for i in bullets if base_id(i) != intro_id])[:MAX_BULLETS[letter]]
         projects.append(Block(facts.get(header_id, ""), [facts[i] for i in bullets if i in facts]))
 
     role = [i for i in get("experience_ids") if i.startswith("Z") and i in facts and not HEADER.match(i)]
@@ -116,9 +151,9 @@ def build(chosen, facts: dict[str, str]) -> Layout:
 
     return Layout(
         headline=facts.get(get("headline_id"), ""),
-        summary=" ".join(facts[i] for i in get("summary_ids") if i in facts and i.startswith("S")),
+        summary=" ".join(facts[i] for i in one_wording(get("summary_ids")) if i in facts and i.startswith("S")),
         skills=skills,
-        education=[facts[i] for i in ["E1", "E2", "E3"] if i in facts],
+        education=education_lines(get("education_ids") or [], facts),
         projects=projects,
         experience=experience,
         order=order,

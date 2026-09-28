@@ -31,7 +31,8 @@ import settings
 import store
 from score_job import MODEL_CLI
 
-FACT_LINE = re.compile(r"^-\s*\[([A-Z]+\d+)\]\s*(.+?)(?:\s*\|\s*tags:\s*(.*))?$", re.M)
+# An id may end in a lowercase letter, which marks another wording of the same fact: P5a of P5.
+FACT_LINE = re.compile(r"^-\s*\[([A-Z]+\d+[a-z]?)\]\s*(.+?)(?:\s*\|\s*tags:\s*(.*))?$", re.M)
 
 
 class Tailored(BaseModel):
@@ -42,7 +43,7 @@ class Tailored(BaseModel):
     experience_ids: list[str] = Field(description="Line ids of the previous role to keep, best first. May be empty for a pure development role.")
     project_ids: list[str] = Field(description="Project line ids to keep, best first, at most seven.")
     skill_ids: list[str] = Field(description="Skill ids to list, ordered so the ones the posting names come first.")
-    education_ids: list[str] = Field(description="Education and language line ids to keep.")
+    education_ids: list[str] = Field(description="Course ids (G lines) worth listing for this posting, best first, at most four; empty when none fits. The degree and languages print on their own.")
     motivation_ids: list[str] = Field(description="Motivation line ids the cover note draws on, two to four of them.")
     lead_with: Literal["experience", "projects"] = Field(description="Which section to print first, whichever the posting values more.")
     cover_note: str = Field(description="Three to five sentences addressed to this employer. Every claim must come from a selected fact.")
@@ -75,7 +76,13 @@ and in which order, which bullets under each project and in which order, and whi
 lines of the previous role.
 
 The headline and the first summary line decide how the candidate is read. Pick the
-headline closest to the role. Lines with an R id are the candidate's own rules for
+headline closest to the role.
+
+An id that ends in a lowercase letter is another wording of the same fact, P5a of P5,
+written to put a different side of it forward. Choose at most one wording of each fact,
+the one closest to what this posting cares about, and never two of the same fact.
+
+Lines with an R id are the candidate's own rules for
 presenting their background, such as which summary lines to use and in what order:
 follow them exactly, and never select or quote them. The line with a W id is a style
 sample, covered below.

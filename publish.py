@@ -61,7 +61,7 @@ def secrets() -> list[str]:
     # facts and preferences. Headings, instructions and the scoring method are not private.
     facts = ROOT / "facts.md"
     if facts.exists():
-        for match in re.finditer(r"^-\s*\[[A-Z]+\d+\]\s*(.+?)(?:\s*\|\s*tags:.*)?$",
+        for match in re.finditer(r"^-\s*\[[A-Z]+\d+[a-z]?\]\s*(.+?)(?:\s*\|\s*tags:.*)?$",
                                  facts.read_text(encoding="utf-8"), re.M):
             if len(match.group(1)) >= FACT_LENGTH:
                 found.append(match.group(1).strip())
