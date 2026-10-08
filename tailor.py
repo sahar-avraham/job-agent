@@ -100,6 +100,8 @@ It reads: {letter}
   product is about, never the kind of role, so never a name like "GTM engineering". Fill it only when the field is
   new to the candidate and no fact touches it. Leave it empty for any field a fact
   touches, since the letter would then say something false.
+  A fact about service, work or study in an organization of the company's field touches
+  that field too, even when the fact never names the field.
 
 --- FACTS, THE ONLY PERMITTED SOURCE ---
 {facts}
