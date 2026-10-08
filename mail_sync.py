@@ -225,7 +225,14 @@ def company_words(name: str) -> set[str]:
 def same_company(a: str, b: str) -> bool:
     """Treat two names as one company when one's words contain the other's, so Salt matches Salt Security."""
     left, right = company_words(a), company_words(b)
-    return bool(left and right) and (left <= right or right <= left)
+    if left and right and (left <= right or right <= left):
+        return True
+    # A one-word name that starts the other, such as Snap for Snapchat; four letters at least, so short
+    # words never join two companies.
+    if len(left) == 1 and len(right) == 1:
+        x, y = sorted((next(iter(left)), next(iter(right))), key=len)
+        return len(x) >= 4 and y.startswith(x)
+    return False
 
 
 def title_similarity(a: str, b: str) -> float:
@@ -271,14 +278,20 @@ def record(connection: sqlite3.Connection, mail: dict, reading: dict, job: str |
             break
 
     if application is None:
+        frozen = None
         if job:
             posting = dict(connection.execute("SELECT * FROM jobs WHERE id = ?", (job,)).fetchone())
             company, title, url = posting["company"], posting["title"], posting["url"]
+            # Keep what was sent, as the button that marks an application does: the approved files are
+            # still with the job, and a draft rewritten later or a posting taken down loses them.
+            import tracking
+            frozen = tracking.freeze(posting, store.check_date(when[:10]), pathlib.Path("ready"), pathlib.Path("sent"))
         else:
             url = None
         if not title:
             raise ValueError("no job title to record the application under")
-        identifier = store.add_application(connection, company, title, url, channel_of(mail["sender"]), when, job)
+        identifier = store.add_application(connection, company, title, url, channel_of(mail["sender"]), when, job,
+                                           frozen)
     else:
         identifier = application["id"]
 
@@ -301,6 +314,14 @@ def decide(connection: sqlite3.Connection, mail: dict, reading: Reading) -> tupl
 
     applications = [dict(r) for r in connection.execute("SELECT * FROM applications")
                     if same_company(r["company"], reading.company)]
+    if not applications:
+        # A company that renamed itself signs with the new name but still mails from the old domain, as
+        # Next Insurance did as ERGO NEXT. Join the two only when the domain names the application's
+        # company and the title matches too, so a different company is never mistaken for it.
+        domain = set(re.findall(r"[a-z0-9]+", mail["sender"].lower().rsplit("@", 1)[-1]))
+        applications = [dict(r) for r in connection.execute("SELECT * FROM applications")
+                        if company_words(r["company"]) and company_words(r["company"]) <= domain
+                        and title_similarity(r["title"], reading.job_title) >= 0.8]
     chosen, candidates = best_match(applications, reading.job_title) if applications else (None, [])
     job = chosen["job_id"] if chosen else None
     if chosen is None and len(applications) > 1 and not reading.job_title.strip():
@@ -346,8 +367,9 @@ def sync(connection: sqlite3.Connection, model: str = MODEL_CLI, days: int = 120
     try:
         imap = open_mailbox()
     except (MailSetupError, OSError) as error:
+        # Returned as well as printed, so the tracking page says the check failed instead of "no updates".
         print(f"mail: {error}", file=sys.stderr)
-        return counts
+        return {**counts, "error": str(error)[:160]}
 
     try:
         seen = {row[0] for row in connection.execute("SELECT message_id FROM mail_messages")}
@@ -388,6 +410,8 @@ def sync(connection: sqlite3.Connection, model: str = MODEL_CLI, days: int = 120
           f"{counts['pending']} waiting for you, {counts['ignored']} not about an application")
     if waiting > 0:
         print(f"mail: {waiting} older messages left for the next run")
+    # Kept even when nothing was new, so the tracking page can say how fresh it is.
+    store.set_meta(connection, "mail_checked_at", store.now())
     return counts
 
 

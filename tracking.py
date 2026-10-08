@@ -63,15 +63,28 @@ ol.log-events { margin:.6rem 0 0; padding-right:1.1rem; font-size:.84rem; color:
 ol.log-events li { margin-bottom:.2rem; }
 .attention { border-right:4px solid var(--warn); }
 .empty { color:var(--soft); }
+.mail-line { display:flex; gap:.6rem; align-items:center; flex-wrap:wrap; }
+.mail-line .mail-check { font:inherit; font-size:.8rem; font-weight:600; cursor:pointer; border:0; border-radius:5px;
+  padding:.2rem .7rem; background:var(--accent-soft); color:var(--accent); }
+.mail-line .mail-check:disabled { opacity:.5; cursor:default; }
+.filters { display:flex; flex-wrap:wrap; gap:.4rem; margin:1.2rem 0 1rem; }
+.filters .filter { font:inherit; font-size:.86rem; font-weight:600; cursor:pointer; border:1px solid var(--rule);
+  background:var(--surface); color:var(--soft); border-radius:100px; padding:.3rem .85rem; display:flex; gap:.4rem; }
+.filters .filter b { color:var(--ink); }
+.filters .filter[aria-pressed="true"] { background:var(--accent); border-color:var(--accent); color:var(--paper); }
+.filters .filter[aria-pressed="true"] b { color:var(--paper); }
 details.manual-box { margin-top:2.5rem; }
 details.manual-box summary { cursor:pointer; font-weight:600; color:var(--accent); }
 """
 
 
 def freeze(job: dict, sent_at: str, ready: pathlib.Path, root: pathlib.Path,
-           answers: list[dict] | None = None) -> str | None:
-    """Copy what was sent and the posting text, because drafts get rewritten and postings get removed."""
-    name = store.stem(job["company"], job["title"])
+           answers: list[dict] | None = None, extra: dict[str, pathlib.Path] | None = None) -> str | None:
+    """Copy what was sent and the posting text, because drafts get rewritten and postings get removed.
+
+    extra names other files that went out, such as the transcript, by the name to keep them under.
+    """
+    name = store.job_stem(job)
     folder = root / f"{sent_at}-{name}"
     documents = [ready / f"{name}-{kind}.{ext}" for kind in ("cv", "cover-letter") for ext in ("docx", "pdf")]
     if not any(d.is_file() for d in documents) and not job.get("description") and not answers:
@@ -81,6 +94,9 @@ def freeze(job: dict, sent_at: str, ready: pathlib.Path, root: pathlib.Path,
     for document in documents:
         if document.is_file():
             shutil.copy2(document, folder / document.name)
+    for kept_as, source in (extra or {}).items():
+        if source.is_file():
+            shutil.copy2(source, folder / kept_as)
     if job.get("description"):
         (folder / "posting.txt").write_text(
             f"{job['company']}\n{job['title']}\n{job['url']}\n\n{job['description']}", encoding="utf-8")
@@ -181,14 +197,15 @@ def app_block(app: dict, today: str, attention: str | None) -> str:
     if app["frozen_dir"]:
         folder = pathlib.Path(app["frozen_dir"])
         if folder.is_dir():
-            labels = {"posting.txt": "תיאור המשרה כפי שנשמר", "form-answers.txt": "התשובות בטופס, כקובץ"}
+            labels = {"posting.txt": "תיאור המשרה כפי שנשמר", "form-answers.txt": "התשובות בטופס, כקובץ",
+                      "transcript.pdf": "גיליון ציונים"}
             for file in sorted(folder.iterdir()):
                 kind = "PDF" if file.suffix == ".pdf" else "Word"
                 label = labels.get(file.name, f"קורות חיים, {kind}" if "-cv." in file.name
                                    else f"מכתב, {kind}" if "cover-letter" in file.name else file.name)
-                links += f'<a href="/{esc(file.as_posix())}">{label}</a>'
+                links += f'<a href="/{esc(file.as_posix())}" target="_blank" rel="noopener">{label}</a>'
 
-    sources = {"standing": "קבועה", "drafted": "טיוטה שאישרת", "you": "הקלדת"}
+    sources = {"standing": "קבועה", "drafted": "טיוטה שאישרת", "you": "הקלדת", "file": "קובץ שצורף"}
     answered = "".join(
         f'<dt class="ltr">{esc(a["question"])}</dt><dd class="ltr">{esc(a["answer"])}'
         f' <span class="source">{sources.get(a["source"], a["source"])}</span></dd>'
@@ -266,46 +283,59 @@ def pending_mail(connection) -> str:
             "אבל לא היה ברור לאיזו. שום דבר לא נרשם עד שתאשר.</p>" + "".join(blocks))
 
 
-def render(apps: list[dict], pending: str = "") -> str:
+CATEGORIES = [("all", "הכל"), ("active", "בתהליך"), ("waiting", "ממתינות"),
+              ("quiet", f"שקטות {NUDGE_DAYS}+ ימים"), ("rejected", "נדחו"), ("ended", "נסגרו אחרת")]
+# Order in the full list: what needs doing first, what is still open next, the closed last.
+ORDER = {"active": 0, "waiting": 1, "rejected": 2, "ended": 3}
+
+
+def categories(app: dict) -> list[str]:
+    """The filters an application appears under; every one appears under "all"."""
+    stage = app["stage"]
+    main = "active" if stage in ACTIVE else "waiting" if stage in WAITING else \
+        "rejected" if stage == "rejection" else "ended"
+    quiet = ["quiet"] if main == "waiting" and app["days_quiet"] >= NUDGE_DAYS else []
+    return ["all", main, *quiet]
+
+
+def render(apps: list[dict], pending: str = "", checked: str = "") -> str:
     today = date.today().isoformat()
     attention = {a["id"]: needs_attention(a) for a in apps}
     flagged = [a for a in apps if attention[a["id"]]]
-    active = [a for a in apps if a["stage"] in ACTIVE]
-    waiting = [a for a in apps if a["stage"] in WAITING]
-    ended = [a for a in apps if a["stage"] not in ACTIVE | WAITING]
-
-    def section(title: str, items: list[dict], empty: str) -> str:
-        body = "".join(app_block(a, today, attention[a["id"]]) for a in items)
-        return f"<h2>{title}</h2>" + (body or f'<p class="empty">{empty}</p>')
-
-    counts = {
-        "הגשות": len(apps),
-        "בתהליך": len(active),
-        "ממתינות": len(waiting),
-        "נדחו": sum(a["stage"] == "rejection" for a in apps),
-        f"שקטות {NUDGE_DAYS}+ ימים": sum(a["stage"] in WAITING and a["days_quiet"] >= NUDGE_DAYS for a in apps),
-    }
-    counts_html = "".join(f"<span>{k}<b>{v}</b></span>" for k, v in counts.items())
+    cats = {a["id"]: categories(a) for a in apps}
+    counts = {key: sum(key in cats[a["id"]] for a in apps) for key, _ in CATEGORIES}
+    newest_first = sorted(apps, key=lambda a: a["sent_at"], reverse=True)
+    ordered = sorted(newest_first, key=lambda a: ORDER[cats[a["id"]][1]])  # a stable sort keeps newest first per group
+    body = "".join(
+        app_block(a, today, attention[a["id"]]).replace(
+            f'data-app="{a["id"]}"', f'data-app="{a["id"]}" data-cats="{" ".join(cats[a["id"]])}"', 1)
+        for a in ordered)
+    filters = "".join(
+        f'<button type="button" class="filter" data-cat="{key}" aria-pressed="{"true" if key == "all" else "false"}">'
+        f'{label}<b>{counts[key]}</b></button>' for key, label in CATEGORIES)
     flagged_note = ("<p class=\"meta\">הגשה אחת מסומנת כשווה תשומת לב.</p>" if len(flagged) == 1 else
                     f"<p class=\"meta\">{len(flagged)} הגשות מסומנות כשוות תשומת לב.</p>" if flagged else "")
+    checked_note = (f'<p class="meta mail-line"><span id="mail-state">'
+                    f'{"המייל נבדק לאחרונה " + checked + "." if checked else "המייל עוד לא נבדק."}</span> '
+                    f'<button type="button" class="mail-check">בדוק מייל עכשיו</button></p>')
 
     return f"""<!doctype html>
 <html lang="he" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>מעקב הגשות</title><style>{report.CSS}{CSS}</style></head>
 <body><div class="doc">
-<nav class="pages"><a href="/">משרות</a><a href="/tracking" class="here">מעקב הגשות</a></nav>
+<nav class="pages"><a href="/">משרות</a><a href="/tracking" class="here">מעקב הגשות</a><a href="/sources">סריקת משרות</a></nav>
 <header>
   <h1>מעקב הגשות</h1>
   {flagged_note}
-  <div class="counts">{counts_html}</div>
+  {checked_note}
 </header>
 
 {pending}
 
-{section("בתהליך", active, "אין כרגע הגשות בשלב סינון, מטלה או ראיון.")}
-{section("ממתינות לתשובה", waiting, "אין הגשות שממתינות.")}
-{section("הסתיימו", ended, "עדיין אין.")}
+<div class="filters" role="toolbar" aria-label="סינון לפי מצב">{filters}</div>
+<div class="apps">{body or '<p class="empty">עדיין אין הגשות.</p>'}</div>
+<p class="empty filter-empty" hidden>אין הגשות במצב הזה.</p>
 
 <details class="manual-box">
   <summary>הוספת הגשה שלא מופיעה בדוח המשרות</summary>
@@ -324,13 +354,20 @@ def render(apps: list[dict], pending: str = "") -> str:
 </div><script src="/tracking.js"></script></body></html>"""
 
 
+def last_mail_check(connection) -> str:
+    """When the mailbox was last read, in local time, or nothing when it never was."""
+    from datetime import datetime
+    value = store.get_meta(connection, "mail_checked_at")
+    return datetime.fromisoformat(value).astimezone().strftime("%d/%m בשעה %H:%M") if value else ""
+
+
 def page(db: str) -> str:
     connection = store.connect(db)
     try:
         apps = store.applications(connection)
         for app in apps:
             app["answers"] = store.form_answers(connection, app["job_id"]) if app["job_id"] else []
-        return render(apps, pending_mail(connection))
+        return render(apps, pending_mail(connection), last_mail_check(connection))
     finally:
         connection.close()
 

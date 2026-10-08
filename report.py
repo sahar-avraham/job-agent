@@ -24,8 +24,11 @@ import webbrowser
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import fetch_jobs
 import filter_jobs
 import keywords
+import mail_sync
+import scout
 import settings
 import store
 
@@ -89,7 +92,9 @@ h2 { font-size:1.2rem; margin:2.5rem 0 1rem; padding-bottom:.4rem;
 .bar-actions button.primary { background:var(--accent); color:var(--paper); }
 .bar-actions button.submit-batch { background:var(--good); color:var(--paper); }
 .bar-actions button:disabled { opacity:.45; cursor:default; }
-.bar-count { color:var(--soft); font-size:.87rem; margin-inline-end:auto; }
+.bar-count { color:var(--soft); font-size:.87rem; margin-inline-end:auto; flex:1 1 14rem; min-width:0; }
+.bar-count .names { color:var(--ink); }
+.bar-actions button.clear { background:transparent; color:var(--soft); border:1px solid var(--rule); }
 .log { font-family:"IBM Plex Mono",monospace; direction:ltr; unicode-bidi:isolate; text-align:left;
   font-size:.76rem; background:var(--code-bg); color:var(--code-fg); border-radius:6px;
   padding:.7rem .9rem; margin-top:.7rem; max-height:13rem; overflow:auto; white-space:pre-wrap; display:none; }
@@ -100,6 +105,8 @@ nav.pages a { font-size:.88rem; font-weight:600; text-decoration:none; color:var
 nav.pages a.here { background:var(--accent-soft); color:var(--accent); }
 .badge.sent { background:var(--good); color:var(--paper); }
 .badge.near { background:var(--good-soft); color:var(--good); }
+.badge.old { background:var(--warn-soft); color:var(--warn); }
+.badge.map { background:var(--accent-soft); color:var(--accent); }
 .badge.siblings { background:var(--warn-soft); color:var(--warn); }
 .coverage { margin-top:.8rem; display:flex; flex-wrap:wrap; gap:.3rem; align-items:center; }
 .coverage h4 { width:100%; margin:0 0 .1rem; font-size:.72rem; letter-spacing:.1em;
@@ -122,17 +129,37 @@ button.mark-sent { font:inherit; font-size:.85rem; font-weight:600; cursor:point
 form.update, form.manual, form.sent-form { display:flex; flex-wrap:wrap; gap:.5rem; align-items:end;
   margin-top:.7rem; padding-top:.7rem; border-top:1px solid var(--rule); }
 form[hidden], .error[hidden] { display:none; }
-.filter-bar { font-size:.9rem; color:var(--soft); margin:-.4rem 0 1rem; }
-.filter-bar input { accent-color:var(--accent); margin-inline-end:.4rem; }
-body.only-comeet .job[data-board="other"] { display:none; }
+.board-bar { display:flex; flex-wrap:wrap; gap:.4rem; margin:-.4rem 0 1rem; }
+.board-bar button { font:inherit; font-size:.85rem; cursor:pointer; border:1px solid var(--rule); border-radius:999px;
+  padding:.25rem .8rem; background:transparent; color:var(--soft); }
+.board-bar button.on { background:var(--accent); border-color:var(--accent); color:var(--paper); }
+.dupes ul { margin:.3rem 0 .8rem; padding-inline-start:1.2rem; }
+.dupes h3 { font-size:.95rem; margin:.8rem 0 .2rem; }
+.dupes-start, .focus-nav button { font:inherit; font-size:.87rem; font-weight:600; cursor:pointer; border:0;
+  border-radius:6px; padding:.4rem .9rem; background:var(--accent); color:var(--paper); }
+.focus-nav button.focus-exit, .focus-nav button.focus-prev { background:var(--accent-soft); color:var(--accent); }
+.focus-nav button:disabled { opacity:.4; cursor:default; }
+.focus-bar { position:sticky; top:env(safe-area-inset-top, 0px); z-index:10; background:var(--surface);
+  border:1px solid var(--rule); border-radius:8px; padding:.8rem 1rem; margin:1rem 0; }
+.focus-head { display:flex; gap:.8rem; align-items:baseline; flex-wrap:wrap; font-size:1.05rem; }
+.focus-step { color:var(--soft); font-size:.85rem; }
+.focus-case { margin:.3rem 0 .6rem; color:var(--soft); }
+.focus-nav { display:flex; gap:.5rem; flex-wrap:wrap; }
+body.focus-mode .outside-focus { display:none; }
+.job[hidden] { display:none; }
 button.submit-now { font:inherit; font-size:.85rem; font-weight:700; cursor:pointer; border:0; border-radius:5px;
   padding:.32rem .9rem; background:var(--good); color:var(--paper); margin-top:.8rem; margin-inline-end:.4rem; }
 button.submit-now:disabled { opacity:.45; cursor:default; }
 button.dismiss { font:inherit; font-size:.85rem; cursor:pointer; border:0; background:transparent;
   color:var(--faint); padding:.3rem .6rem; margin-top:.8rem; }
 button.dismiss:hover { color:var(--warn); }
-details.removed-box { margin-top:2rem; }
-details.removed-box summary { cursor:pointer; color:var(--soft); font-weight:600; }
+details.removed-box, details.near-box { margin-top:2rem; }
+details.removed-box summary, details.near-box summary { cursor:pointer; color:var(--soft); font-weight:600; }
+td.gap { font-size:.8rem; color:var(--soft); }
+.wide-table { overflow-x:auto; }
+@media (max-width:640px) { .gap { display:none; } }
+button.dismiss-row { font:inherit; font-size:.8rem; cursor:pointer; border:0; background:transparent; color:var(--faint); }
+button.dismiss-row:hover { color:var(--warn); }
 button.restore { font:inherit; font-size:.8rem; cursor:pointer; border:0; border-radius:5px;
   padding:.2rem .6rem; background:var(--accent-soft); color:var(--accent); }
 form label { display:flex; flex-direction:column; gap:.15rem; font-size:.75rem; color:var(--soft); }
@@ -204,9 +231,7 @@ def esc(text) -> str:
 
 def document_for(job: dict, folder: pathlib.Path) -> str | None:
     """Find the tailored document for a job, so the report links to it instead of hiding it."""
-    import re as _re
-    stem = _re.sub(r"[^a-z0-9]+", "-", f"{job['company']}-{job['title']}".lower()).strip("-")[:60]
-    candidate = folder / f"{stem}.html"
+    candidate = folder / f"{store.job_stem(job)}.html"
     return f"{folder.name}/{candidate.name}" if candidate.exists() else None
 
 
@@ -216,11 +241,13 @@ CHANNEL_OPTIONS = [("site", "אתר החברה"), ("linkedin", "לינקדאין
 
 def sent_files(job: dict) -> str:
     """Link the approved files, so the exact PDFs the submit button attaches can be opened first."""
-    stem = store.stem(job["company"], job["title"])
+    stem = store.job_stem(job)
     links = [f'<a href="ready/{stem}-{kind}.pdf" target="_blank" rel="noopener">{label}</a>'
              for kind, label in (("cv", "קורות החיים שיישלחו, PDF"), ("cover-letter", "המכתב שיישלח, PDF"))
              if (pathlib.Path("ready") / f"{stem}-{kind}.pdf").is_file()]
-    return f'<p class="doc-link served-only">{" ".join(links)}</p>' if links else ""
+    # For a form filled by hand: the same files, named for a recruiter, in a folder that opens at once.
+    folder = '<button type="button" class="upload-folder">פתח תיקייה להגשה ידנית</button>'
+    return f'<p class="doc-link served-only">{" ".join(links)} {folder}</p>' if links else ""
 
 
 def sent_form(job: dict) -> str:
@@ -244,7 +271,7 @@ def sent_form(job: dict) -> str:
 
 def cover_note_of(job: dict, folder: pathlib.Path) -> str:
     """Read the cover note out of the draft, so it can be read in the card instead of in a file."""
-    path = folder / f"{store.stem(job['company'], job['title'])}.json"
+    path = folder / f"{store.job_stem(job)}.json"
     if not path.is_file():
         return ""
     try:
@@ -255,7 +282,7 @@ def cover_note_of(job: dict, folder: pathlib.Path) -> str:
 
 def coverage_of(job: dict, folder: pathlib.Path, facts_text: str) -> dict[str, list[str]] | None:
     """Compare what the posting asks for with what the tailored CV says, when a draft exists."""
-    path = folder / f"{store.stem(job['company'], job['title'])}.txt"
+    path = folder / f"{store.job_stem(job)}.txt"
     if not path.is_file() or not facts_text:
         return None
     return keywords.coverage(job.get("description") or "", path.read_text(encoding="utf-8"), facts_text)
@@ -275,6 +302,52 @@ def coverage_block(result: dict[str, list[str]] | None) -> str:
     return f'<div class="coverage"><h4>מה המשרה מבקשת</h4>{chips}{aside}</div>'
 
 
+# The systems a job can be applied through, each with the name its own site uses, so a button reads at a glance.
+BOARD_FILTERS = [("all", "הכל"), ("comeet", "Comeet"), ("greenhouse", "Greenhouse"), ("workday", "Workday"),
+                 ("lever", "Lever"), ("ashby", "Ashby"), ("workable", "Workable"),
+                 ("smartrecruiters", "SmartRecruiters"), ("amazon", "Amazon"),
+                 ("eightfold", "Eightfold"), ("elbit", "Elbit"), ("bob", "Bob"), ("oracle", "Oracle"),
+                 ("techmap", "מפת ההייטק"), ("other", "אחר")]
+# Link fragments that name each system, read before the company list, which only knows where a company was found.
+BOARD_LINKS = [("comeet", "comeet.com/jobs"), ("greenhouse", "greenhouse.io"), ("greenhouse", "gh_jid="),
+               ("workday", "myworkdayjobs.com"), ("lever", "lever.co"), ("ashby", "ashbyhq.com"),
+               ("workable", "workable.com"), ("smartrecruiters", "smartrecruiters.com"),
+               ("amazon", "amazon.jobs"), ("elbit", "elbitsystemscareer.com"), ("bob", "careers.hibob.com"),
+               ("oracle", "/hcmUI/CandidateExperience/"), ("techmap", "linkedin.com/jobs/view")]
+
+
+def board_of(job: dict) -> str:
+    """The system a job's application goes through, from its link, else from the company list."""
+    url = job.get("url") or ""
+    for board, fragment in BOARD_LINKS:
+        if fragment in url:
+            return board
+    boards = {board for company, board, _ in fetch_jobs.COMPANIES if company == job["company"]}
+    named = {key for key, _ in BOARD_FILTERS}
+    return boards.pop() if len(boards) == 1 and boards <= named else "other"
+
+
+def board_bar(jobs: list[dict]) -> str:
+    counts = collections.Counter(board_of(j) for j in jobs)
+    buttons = "".join(
+        f'<button type="button" data-board="{key}">{label} {len(jobs) if key == "all" else counts[key]}</button>'
+        for key, label in BOARD_FILTERS if key == "all" or counts[key]
+    )
+    # One hiding rule per system, made from the same list as the buttons, so a new system cannot miss its rule.
+    hide = ", ".join(f'body[data-board-filter="{key}"] .job:not([data-board="{key}"])'
+                     for key, _ in BOARD_FILTERS if key != "all")
+    return (f'<style>{hide} {{ display:none; }}</style>'
+            f'<p class="served-only board-bar" id="board-bar">{buttons}</p>')
+
+
+def age_badge(job: dict) -> str:
+    """Mark a posting old enough that the role may already be filled."""
+    age = filter_jobs.days_posted(job)
+    if age is None or age <= filter_jobs.OLD_DAYS:
+        return ""
+    return f'<span class="badge old">פורסמה לפני {age // 30} חודשים</span>'
+
+
 def job_block(job: dict, is_new: bool, top: bool, alive: bool = True, document: str | None = None,
               same_company: bool = False, siblings: int = 0, note: str = "",
               coverage: dict[str, list[str]] | None = None) -> str:
@@ -285,6 +358,10 @@ def job_block(job: dict, is_new: bool, top: bool, alive: bool = True, document: 
         badges += '<span class="badge fresh">חדשה</span>'
     if not alive:
         badges += '<span class="badge dead">קישור שבור</span>'
+    badges += age_badge(job)
+    # Known only from the Tech Map's list: the score rests on the title, and the link is the posting.
+    if scout.is_map_job(job):
+        badges += '<span class="badge map">מהמפה, בלי תיאור</span>'
     if same_company:
         badges += '<span class="badge same-company">כבר הגשת לחברה הזו</span>'
     # Recruiters see every application to their company on one profile, so two at once needs a choice.
@@ -301,7 +378,7 @@ def job_block(job: dict, is_new: bool, top: bool, alive: bool = True, document: 
     gaps = "".join(f'<li class="ltr">{esc(g)}</li>' for g in job["gaps"]) or "<li>—</li>"
 
     return f"""
-<article class="job{' top' if top else ''}" data-id="{esc(job['id'])}" data-doc="{'yes' if document else 'no'}" data-board="{'comeet' if 'comeet.com/jobs' in (job.get('url') or '') else 'other'}">
+<article class="job{' top' if top else ''}" data-id="{esc(job['id'])}" data-doc="{'yes' if document else 'no'}" data-board="{board_of(job)}">
   <div class="head">
     <input type="checkbox" class="pick" value="{esc(job['id'])}" aria-label="select">
     <span class="score">{job['score']}</span>
@@ -326,23 +403,163 @@ def job_block(job: dict, is_new: bool, top: bool, alive: bool = True, document: 
       <div><h4>פערים</h4><ul>{gaps}</ul></div>
     </div>
   </details>
-  <a class="apply-link ltr" href="{esc(job['url'])}">{esc(job['url'])}</a>
+  <a class="apply-link ltr" href="{esc(job['url'])}" target="_blank" rel="noopener">{esc(job['url'])}</a>
   {'<p class="dead-note">הקישור לא נפתח. חפש את המשרה בדף הקריירה של החברה.</p>' if not alive else ''}
-  {f'<p class="doc-link"><a href="{document}">קורות חיים ומכתב מותאמים למשרה הזו</a></p>' if document else ''}
+  {f'<p class="doc-link"><a href="{document}" target="_blank" rel="noopener">קורות חיים ומכתב מותאמים למשרה הזו</a></p>' if document else ''}
   {sent_files(job)}
   {sent_form(job)}
 </article>"""
 
 
+OPEN_CACHE: dict[str, tuple[float, set[str] | None]] = {}
+OPEN_CACHE_SECONDS = 3600
+# The lowest score still listed under the shortlist, with a link, for a second look.
+NEAR_MISS = 30
+
+
+def closed_since(jobs: list[dict]) -> set[str]:
+    """Ids of listed jobs no longer on their company's board, read live once an hour per company.
+
+    Jobs close between collections, and a closed one should not reach tailoring or a form. One
+    request per company answers for all its jobs. A board that fails or comes back empty proves
+    nothing, so its jobs are left as they are rather than hidden by mistake.
+    """
+    import time
+
+    boards: dict[str, list[tuple[str, str, str]]] = {}
+    for entry in fetch_jobs.COMPANIES:
+        if entry[1] != "workday":
+            boards.setdefault(entry[0], []).append(entry)
+    stale = [c for c in {j["company"] for j in jobs if j["company"] in boards}
+             if time.time() - OPEN_CACHE.get(c, (0.0, None))[0] > OPEN_CACHE_SECONDS]
+    # A Workday company can list hundreds of jobs across dozens of pages, so each listed job is asked
+    # about on its own instead: one short request that answers "not found" once the job is closed.
+    workday_jobs = [j for j in jobs if "myworkdayjobs.com" in (j.get("url") or "")
+                    and time.time() - OPEN_CACHE.get(j["id"], (0.0, None))[0] > OPEN_CACHE_SECONDS]
+
+    def ask_workday(job):
+        import urllib.error
+        import workday
+        match = re.match(r"https://([^.]+)\.(wd\d+)\.myworkdayjobs\.com/([^/]+)(/job/.+)$", job["url"])
+        if not match:
+            return job["id"], None
+        tenant, wd, site, path = match.groups()
+        try:
+            workday.request(workday.api(f"{tenant}|{wd}|{site}") + path, timeout=15)
+            return job["id"], {job["id"]}
+        except urllib.error.HTTPError as error:
+            if error.code in (404, 410):
+                return job["id"], set()
+            if error.code != 403:
+                return job["id"], None
+        except Exception:
+            return job["id"], None
+        # Some sites answer a closed job with 403, which a block would also give, so the site's own
+        # search for the job's requisition id decides: a search that works and lacks the job means closed.
+        requisition = re.search(r"_([A-Z]+-?\d+(?:-\d+)?)$", path)
+        if not requisition:
+            return job["id"], None
+        try:
+            found = workday.request(workday.api(f"{tenant}|{wd}|{site}") + "/jobs",
+                                    {"appliedFacets": {}, "limit": 20, "offset": 0, "searchText": requisition.group(1)},
+                                    timeout=15)
+            paths = {p.get("externalPath") for p in found.get("jobPostings") or []}
+            return job["id"], {job["id"]} if path in paths else set()
+        except Exception:
+            return job["id"], None
+
+    def read(company):
+        results = [fetch_jobs.fetch_company(entry) for entry in boards[company]]
+        listed = [job for _, found, _ in results for job in found]
+        return company, ({store.job_id(job.url) for job in listed}
+                         if listed and not any(error for _, _, error in results) else None)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for company, ids in pool.map(read, stale):
+            OPEN_CACHE[company] = (time.time(), ids)
+        for job_id, ids in pool.map(ask_workday, workday_jobs):
+            OPEN_CACHE[job_id] = (time.time(), ids)
+    key = lambda j: j["id"] if "myworkdayjobs.com" in (j.get("url") or "") else j["company"]
+    return {j["id"] for j in jobs
+            if (known := OPEN_CACHE.get(key(j), (0.0, None))[1]) is not None and j["id"] not in known}
+
+
+def closed_note(closed: list[dict]) -> str:
+    if not closed:
+        return ""
+    names = ", ".join(f'{j["company"]} · {j["title"]}' for j in closed)
+    return (f'<p class="meta">נסגרו מאז האיסוף האחרון ולכן לא מוצגות ({len(closed)}): '
+            f'<span class="ltr">{esc(names)}</span></p>')
+
+
+def company_groups(shortlist: list[dict], apps: list[dict]) -> list[dict]:
+    """Companies with jobs to decide about together, one decision at a time.
+
+    Two cases: several open jobs at a company not applied to yet, where usually one is picked and
+    the rest removed; and open jobs at a company already applied to, where the question is whether
+    to apply again. Companies with none applied come first, best score first within each case.
+    """
+    import mail_sync
+    from tracking import KIND_LABELS
+
+    groups: dict[str, list[dict]] = {}
+    for job in shortlist:
+        key = " ".join(sorted(mail_sync.company_words(job["company"]))) or job["company"].lower()
+        groups.setdefault(key, []).append(job)
+    out = []
+    for key, jobs in groups.items():
+        sent = [a for a in apps if mail_sync.same_company(a["company"], jobs[0]["company"])]
+        if (not sent and len(jobs) < 2) or not jobs:
+            continue
+        out.append({
+            "key": key, "company": jobs[0]["company"], "kind": "applied" if sent else "fresh",
+            "ids": [j["id"] for j in sorted(jobs, key=lambda j: -j["score"])],
+            "sent": [{"title": a["title"], "stage": KIND_LABELS.get(a["stage"], a["stage"])} for a in sent],
+            "best": max(j["score"] for j in jobs),
+        })
+    return sorted(out, key=lambda g: (g["kind"] != "fresh", -g["best"]))
+
+
+def groups_section(groups: list[dict]) -> str:
+    fresh = [g for g in groups if g["kind"] == "fresh"]
+    again = [g for g in groups if g["kind"] == "applied"]
+    if not groups:
+        return ""
+    # A title containing "</" must not close the script element that carries the data.
+    data = json.dumps(groups, ensure_ascii=False).replace("</", "<\\/")
+    rows = lambda items: "".join(
+        f'<li><span class="ltr">{esc(g["company"])}</span> · {len(g["ids"])} משרות'
+        + (f' · הגשת: <span class="ltr">{esc(", ".join(s["title"] for s in g["sent"]))}</span>' if g["sent"] else "")
+        + "</li>" for g in items)
+    return f"""
+<section class="served-only dupes outside-focus">
+  <h2>כמה משרות מאותה חברה</h2>
+  {f'<h3>עוד לא הגשת לאף אחת ({len(fresh)} חברות)</h3><ul>{rows(fresh)}</ul>' if fresh else ''}
+  {f'<h3>כבר הגשת לחברה, ויש בה עוד משרות ({len(again)} חברות)</h3><ul>{rows(again)}</ul>' if again else ''}
+  <button type="button" id="btn-dupes" class="dupes-start">עבור עליהן חברה אחרי חברה</button>
+</section>
+<div class="focus-bar served-only" id="focus-bar" hidden>
+  <div class="focus-head"><b class="focus-company ltr"></b><span class="focus-step"></span></div>
+  <p class="focus-case"></p>
+  <div class="focus-nav">
+    <button type="button" class="focus-prev">הקודמת</button>
+    <button type="button" class="focus-next">החברה הבאה</button>
+    <button type="button" class="focus-exit">סיום</button>
+  </div>
+</div>
+<script type="application/json" id="company-groups">{data}</script>"""
+
+
 def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive: dict[str, bool],
            docs: dict[str, str], applied: dict[str, dict] | None = None,
-           dismissed: dict[str, dict] | None = None) -> str:
+           dismissed: dict[str, dict] | None = None, apps: list[dict] | None = None,
+           closed: list[dict] | None = None) -> str:
     applied, dismissed = applied or {}, dismissed or {}
-    # A job already sent or removed leaves the list, so the page keeps showing only what is still to do.
-    done = [j for j in jobs if j["id"] in applied]
+    # A job already sent or removed leaves the list, so the page keeps showing only what is still to do;
+    # sent jobs are listed on the tracking page.
     removed = [j for j in jobs if j["id"] in dismissed and j["id"] not in applied]
     jobs = [j for j in jobs if j["id"] not in applied and j["id"] not in dismissed]
-    companies = {a["company"].lower() for a in applied.values()}
+    companies = {a["company"] for a in applied.values()}
     shortlist = [j for j in jobs if j["score"] >= counts["threshold"]]
     rest = [j for j in jobs if j["score"] < counts["threshold"]]
 
@@ -354,7 +571,7 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
     covers = {j["id"]: coverage_of(j, drafts, facts_text) for j in shortlist} if drafts.is_dir() else {}
     blocks = "".join(
         job_block(j, j["id"] in new_ids, j["decision"] == "apply", alive.get(j["id"], True), docs.get(j["id"]),
-                  j["company"].lower() in companies, per_company[j["company"].lower()] - 1,
+                  any(mail_sync.same_company(j["company"], c) for c in companies), per_company[j["company"].lower()] - 1,
                   cover_note_of(j, drafts) if drafts.is_dir() else "", covers.get(j["id"]))
         for j in shortlist
     )
@@ -368,16 +585,6 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
     if not shortlist:
         blocks = "<p>אף משרה לא עברה את הסף בהרצה הזו.</p>"
 
-    done_rows = "".join(
-        f'<tr><td class="num">{datetime.fromisoformat(applied[j["id"]]["sent_at"]):%d/%m}</td>'
-        f'<td class="ltr">{esc(j["company"])}</td><td class="ltr">{esc(j["title"])}</td></tr>'
-        for j in done
-    )
-    done_section = (
-        '<h2>כבר הגשת</h2><p class="meta served-only">המצב של כל אחת מהן נמצא ב<a href="/tracking">מעקב ההגשות</a>.</p>'
-        f'<table><thead><tr><th>הוגש</th><th>חברה</th><th>תפקיד</th></tr></thead><tbody>{done_rows}</tbody></table>'
-    ) if done else ""
-
     removed_rows = "".join(
         f'<tr><td class="num">{j["score"]}</td><td class="ltr">{esc(j["company"])}</td>'
         f'<td class="ltr">{esc(j["title"])}</td>'
@@ -390,18 +597,31 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
         f'<table><tbody>{removed_rows}</tbody></table></details>'
     ) if removed else ""
 
-    rows = "".join(
+    # Just under the line the score is least sure, so those jobs keep a link, their main gap and a way out.
+    near = [j for j in rest if j["score"] >= NEAR_MISS]
+    near_rows = "".join(
         f'<tr><td class="num">{j["score"]}</td><td class="ltr">{esc(j["company"])}</td>'
-        f'<td class="ltr">{esc(j["title"])}</td></tr>'
-        for j in rest
+        f'<td class="ltr"><a href="{esc(j["url"])}" target="_blank" rel="noopener">{esc(j["title"])}</a> {age_badge(j)}</td>'
+        f'<td class="ltr gap">{esc(j["gaps"][0]) if j["gaps"] else ""}</td>'
+        f'<td class="served-only"><button type="button" class="dismiss-row" data-id="{esc(j["id"])}">הסר</button></td></tr>'
+        for j in near
     )
+    near_section = (
+        f'<details class="near-box"><summary>כמעט עברו: {len(near)} משרות עם ציון {NEAR_MISS} עד '
+        f'{counts["threshold"] - 1}</summary>'
+        '<p class="meta">ליד כל אחת הפער העיקרי שהמודל מצא. משרה שהוסרה נשארת במאגר ולא תדורג שוב.</p>'
+        '<div class="wide-table"><table><thead><tr><th>ציון</th><th>חברה</th><th>תפקיד</th>'
+        f'<th class="gap">פער עיקרי</th><th></th></tr></thead><tbody>{near_rows}</tbody></table></div></details>'
+    ) if near else ""
+    below = len(rest) - len(near)
+    below_note = f'<p class="meta">עוד {below} משרות קיבלו פחות מ־{NEAR_MISS} ולא מוצגות.</p>' if below else ""
 
     return f"""<!doctype html>
 <html lang="he" dir="rtl"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>משרות, {datetime.now():%d/%m/%Y}</title><style>{CSS}</style></head>
 <body><div class="doc">
-<nav class="pages served-only"><a href="/" class="here">משרות</a><a href="/tracking">מעקב הגשות</a></nav>
+<nav class="pages served-only"><a href="/" class="here">משרות</a><a href="/tracking">מעקב הגשות</a><a href="/sources">סריקת משרות</a></nav>
 <header>
   <h1>משרות שעברו סינון</h1>
   <p class="meta">{datetime.now():%d/%m/%Y %H:%M} · רובריקה <span class="ltr">{esc(rubric)}</span></p>
@@ -415,34 +635,40 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
 
 <div class="bar-actions" id="actions">
   <span class="bar-count" id="count"></span>
+  <button id="btn-clear" class="clear">נקה בחירה</button>
   <button id="btn-tailor">הכן קורות חיים מותאמים</button>
   <button id="btn-approve" class="primary">אשר והפק קבצים להגשה</button>
   <button id="btn-submit-batch" class="submit-batch">הגש את המסומנות</button>
+  <button id="btn-forms" class="submit-batch">פתח ומלא טפסים בכרום</button>
 </div>
 <pre class="log" id="log"></pre>
 
+{groups_section(company_groups(shortlist, apps or []))}
+
+<div class="outside-focus">
 <h2>שווה את תשומת ליבך</h2>
-<p class="served-only filter-bar"><label><input type="checkbox" id="only-comeet">
-  רק משרות שאפשר להגיש מכאן אוטומטית</label></p>
+{board_bar(shortlist)}
 {missing_note}
-{blocks}
+{closed_note(closed or [])}
+</div>
+<div id="shortlist">{blocks}</div>
 
-{done_section}
-
+<div class="outside-focus">
 {removed_section}
 
-<h2>נבדקו ולא עברו את הסף</h2>
-<table><thead><tr><th>ציון</th><th>חברה</th><th>תפקיד</th></tr></thead>
-<tbody>{rows or '<tr><td colspan="3">אין</td></tr>'}</tbody></table>
+{near_section}
+{below_note}
+</div>
 
-<footer>
+<footer class="outside-focus">
 הציון הוא שבעים אחוז סיכויים ושלושים אחוז התאמה. רצייה מוצגת ואינה משוקללת.
 ההגשה עצמה נעשית על ידך, דרך הקישור שבכל כרטיס.
 </footer>
 </div></body></html>"""
 
 
-def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bool = False, check: bool = True) -> int:
+def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bool = False, check: bool = True,
+          live: bool = False) -> int:
     """Build the page from the database. Called directly by run.py and by main below."""
     profile = pathlib.Path(profile_path)
     if not profile.exists():
@@ -477,6 +703,11 @@ def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bo
         "threshold": threshold,
     }
 
+    # Served pages also ask each company's board, since a job can close after the last collection.
+    closed = closed_since([j for j in jobs if j["score"] >= threshold and j["id"] not in applied]) if live else set()
+    closed_jobs = [j for j in jobs if j["id"] in closed]
+    jobs = [j for j in jobs if j["id"] not in closed]
+
     shortlist = [j for j in jobs if j["score"] >= threshold]
     alive: dict[str, bool] = {}
     if check and shortlist:
@@ -492,7 +723,7 @@ def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bo
 
     path = pathlib.Path(out)
     path.write_text(render(jobs, new_ids, counts, rubric, alive, docs, store.applied_jobs(connection),
-                           store.dismissed_jobs(connection)),
+                           store.dismissed_jobs(connection), store.applications(connection), closed_jobs),
                     encoding="utf-8")
     if docs:
         print(f"{len(docs)} of {len(shortlist)} shortlisted jobs have a tailored document linked")

@@ -30,6 +30,50 @@
 
   const values = (form) => Object.fromEntries(new FormData(form).entries());
 
+  // Show only the applications in the chosen state, and remember the choice across the reloads
+  // that follow every update.
+  function showCategory(cat) {
+    let shown = 0;
+    document.querySelectorAll(".apps .app").forEach((card) => {
+      const match = (card.dataset.cats || "").split(" ").includes(cat);
+      card.hidden = !match;
+      shown += match ? 1 : 0;
+    });
+    document.querySelectorAll(".filter").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.cat === cat)));
+    const empty = document.querySelector(".filter-empty");
+    if (empty) empty.hidden = shown > 0 || !document.querySelector(".apps .app");
+    try { localStorage.setItem("tracking-category", cat); } catch (e) {}
+  }
+  document.querySelectorAll(".filter").forEach((b) => b.addEventListener("click", () => showCategory(b.dataset.cat)));
+
+  // Read the mailbox when the page opens, unless it was read in the last hour; the button forces it.
+  // New replies reload the page so they appear in their place; otherwise only the time line changes.
+  const mailState = document.getElementById("mail-state");
+  const mailButton = document.querySelector(".mail-check");
+  function checkMail(force) {
+    if (!mailState) return;
+    post("/api/mail-check", { force }).then(({ ok, data }) => {
+      if (!ok || !data.running) return;
+      mailState.textContent = "בודק מייל...";
+      if (mailButton) mailButton.disabled = true;
+      const timer = setInterval(() => {
+        fetch("/api/mail-status").then((r) => r.json()).then((s) => {
+          if (s.running) return;
+          clearInterval(timer);
+          const r = s.result || {};
+          if ((r.recorded || 0) + (r.pending || 0) > 0) return location.reload();
+          mailState.textContent = r.error ? `בדיקת המייל נכשלה: ${r.error}` : `המייל נבדק לאחרונה ${s.checked}. אין עדכונים חדשים.`;
+          if (mailButton) mailButton.disabled = false;
+        });
+      }, 2000);
+    });
+  }
+  if (mailButton) mailButton.addEventListener("click", () => checkMail(true));
+  checkMail(false);
+  let saved = "all";
+  try { saved = localStorage.getItem("tracking-category") || "all"; } catch (e) {}
+  if (document.querySelector(`.filter[data-cat="${saved}"]`)) showCategory(saved);
+
   document.addEventListener("click", (e) => {
     const card = e.target.closest(".app");
     if (!card) return;
