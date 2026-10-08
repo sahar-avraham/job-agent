@@ -1,0 +1,28 @@
+{
+ "_note": "Places inside and outside your commute area, in every spelling job boards use (English and Hebrew). Copy to commute.json and set your own.",
+ "inside": [
+  "tel aviv",
+  "tel-aviv",
+  "ramat gan",
+  "givatayim",
+  "herzliya",
+  "petah tikva",
+  "remote",
+  "תל אביב",
+  "רמת גן",
+  "גבעתיים",
+  "הרצליה",
+  "פתח תקווה"
+ ],
+ "outside": [
+  "haifa",
+  "jerusalem",
+  "beer sheva",
+  "be'er sheva",
+  "eilat",
+  "חיפה",
+  "ירושלים",
+  "באר שבע",
+  "אילת"
+ ]
+}

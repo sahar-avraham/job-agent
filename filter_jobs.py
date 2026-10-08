@@ -14,6 +14,7 @@ import pathlib
 import re
 import sys
 from collections import Counter
+from datetime import date
 
 def phrases(words: list[str]) -> re.Pattern:
     """Match whole words only, because a bare substring made "iv" hit "IVR" and "intern" hit "internal"."""
@@ -36,12 +37,14 @@ ROLE_BLOCKLIST = [
     "business analyst", "business data analyst", "financial analyst", "data analyst",
     "big data analyst", "compliance analyst", "product designer", "technical artist",
     "presales", "pre-sales", "implementation",
+    # Found scoring 12 to 29 on 2026-09-30, among the first Workday jobs.
+    "pre-sale", "presale", "customer service engineer", "clinical", "regulatory",
 ]
 
 # Technical roles that scored low every time, dropped on 2026-09-18:
 # testing (9 scored, none reached 50), verification and field roles (6, none), security research (5, none).
 LOW_SCORING_BLOCKLIST = [
-    "qa", "quality", "test", "tester", "testing", "בודק", "בודקת", "בדיקות",
+    "qa", "quality", "test", "tester", "testing", "בודק", "בודקת", "בדיקות", "בדיקה", "איכות", "ולידציה", "ניסויים",
     "verification", "validation", "field", "project engineer", "vlsi",
     "security researcher", "vulnerability researcher", "malware researcher", "threat researcher",
 ]
@@ -54,6 +57,14 @@ DISCIPLINE_BLOCKLIST = [
     "npi", "packaging", "thermal", "materials", "technician", "technicians",
     # Abbreviations the first list missed, found scoring 1 to 7 in batch 4.
     "hw", "ate", "qc", "failure analysis", "labview",
+    # The same disciplines in Hebrew, which came with Elbit's titles once Hebrew engineers passed.
+    "מכונות", "מכני", "מכנית", "כימיה", "חשמל", "אלקטרוניקה", "תהליך", "תפי", "תפ\"י", "תעו\"נ",
+    "ייצור", "יצור", "חומרה", "טכנאי", "הנדסאי", "אופטיקה",
+    # Chip design, firmware and manufacturing titles from Workday, 2026-09-30: 24 scored across all
+    # jobs so far and none reached 50, the highest a firmware role at 43.
+    "firmware", "rtl", "dft", "sta", "circuit", "board design", "logic design", "signal integrity",
+    "power integrity", "physical layer", "soc clock", "soc clocks", "design automation",
+    "mfg", "industrial engineer", "opex",
 ]
 
 # A title must contain one of these to survive. Hebrew developer titles are here because
@@ -63,45 +74,42 @@ TITLE_ALLOWLIST = [
     "fullstack", "frontend", "front end", "java", "python", "devops", "devsecops", "sre",
     "infrastructure", "platform", "cloud", "reliability", "security", "support",
     "מפתח", "מפתחת", "מפתח.ת", "מפתח/ת", "תוכניתן", "תוכניתנית", "תמיכה",
+    # Elbit writes most titles in Hebrew, and its software and systems engineers were dropped, 2026-10-08.
+    "מהנדס", "מהנדסת",
 ]
 
 # Jobs demanding more than this many years of experience are dropped.
 MAX_YEARS_REQUIRED = 3
 
+# Postings older than this are dropped, and ones older than OLD_DAYS are marked on the page.
+STALE_DAYS = 183
+OLD_DAYS = 90
+
 # Support roles are dropped altogether, decided on 2026-09-18 after first keeping
 # the ones that involve code. Escalation and NOC work are the same job under another name.
 SUPPORT_TITLES = re.compile(r"\bsupport\b|\bhelp ?desk\b|\btier \d\b|\bescalation\b|\bnoc\b|תמיכה", re.I)
 
-# The commute area set on 2026-09-18: Haifa is the northern limit and Ashdod the southern one. A job is dropped only when its location names a place outside
-# the area and no place inside it, so "Israel", "Remote" or "Tel Aviv, Jerusalem" all stay.
-OUTSIDE_AREA = [
-    # beyond Haifa
-    "kiryat bialik", "kiryat motzkin", "kiryat ata", "kiryat yam", "krayot", "akko", "acre", "nahariya",
-    "karmiel", "tiberias", "nazareth", "nazareth illit", "nazareth iliit", "nof hagalil", "ziporit", "afula",
-    "yizre'el", "yizreel", "migdal haemek", "migdal ha'emek", "safed", "tzfat", "kiryat shmona", "ma'alot",
-    "misgav", "tefen", "katzrin", "beit shean", "rosh pina",
-    "קריית ביאליק", "קרית ביאליק", "קריית מוצקין", "קריית אתא", "קריות", "עכו", "נהריה", "כרמיאל", "טבריה",
-    "נצרת", "נוף הגליל", "עפולה", "יזרעאל", "מגדל העמק", "צפת", "קריית שמונה", "מעלות", "תפן",
-    # south of Ashdod, and Jerusalem and its hills, which are further than Ashdod from home
-    "ashkelon", "sderot", "kiryat gat", "kiryat malachi", "beer sheva", "be'er sheva", "beersheba",
-    "hatzerim", "dimona", "yeruham", "ofakim", "netivot", "arad", "eilat", "masmiya",
-    "jerusalem", "givat ram", "beit shemesh",
-    "אשקלון", "שדרות", "קריית גת", "קריית מלאכי", "באר שבע", "חצרים", "דימונה", "ירוחם", "אופקים", "נתיבות",
-    "ערד", "אילת", "ירושלים", "בית שמש",
-]
-INSIDE_AREA = [
-    "tel aviv", "tel-aviv", "tlv", "netanya", "herzliya", "herzliyya", "ra'anana", "raanana", "kfar saba",
-    "kefar sava", "hod hasharon", "ramat hasharon", "petah tikva", "petah-tikva", "petach tikva", "ramat gan",
-    "ramat-gan", "giv'atayim", "givatayim", "bnei brak", "holon", "bat yam", "rishon", "ness ziona", "rehovot",
-    "yavne", "ashdod", "lod", "ramla", "modiin", "modi'in", "rosh haayin", "rosh ha'ayin", "or yehuda", "yehud",
-    "kiryat ono", "airport city", "caesarea", "hadera", "even yehuda", "kadima", "haifa", "tirat carmel",
-    "yokneam", "yokne'am", "yagur", "glil yam", "gush dan", "center", "remote",
-    "תל אביב", "נתניה", "הרצליה", "רעננה", "כפר סבא", "הוד השרון", "פתח תקווה", "רמת גן", "גבעתיים", "בני ברק",
-    "חולון", "ראשון", "נס ציונה", "רחובות", "יבנה", "אשדוד", "מודיעין", "ראש העין", "חיפה", "יקנעם", "קיסריה",
-    "חדרה", "מרכז",
-]
-OUTSIDE = phrases(OUTSIDE_AREA)
-INSIDE = phrases(INSIDE_AREA)
+# Roles for students, where the CV and letter say the degree is completed but not yet conferred.
+STUDENT_ROLE = re.compile(r"\bstudent\b|\bintern\b|\binternship\b|סטודנט", re.I)
+
+# The commute area is personal, so it lives in commute.json, kept out of git like companies.json;
+# commute.example.json shows its shape. A job is dropped only when its location names a place outside
+# the area and no place inside it, so "Israel", "Remote" or "Tel Aviv, Jerusalem" all stay. Without the
+# file no job is dropped for its place.
+COMMUTE_FILE = pathlib.Path(__file__).resolve().parent / "commute.json"
+
+
+def load_commute() -> tuple[list[str], list[str]]:
+    """Read the places inside and outside the commute area, as (inside, outside)."""
+    if not COMMUTE_FILE.exists():
+        return [], []
+    area = json.loads(COMMUTE_FILE.read_text(encoding="utf-8"))
+    return area.get("inside", []), area.get("outside", [])
+
+
+INSIDE_AREA, OUTSIDE_AREA = load_commute()
+OUTSIDE = phrases(OUTSIDE_AREA) if OUTSIDE_AREA else None
+INSIDE = phrases(INSIDE_AREA) if INSIDE_AREA else None
 
 # Jobs at these companies are dropped regardless of anything else.
 COMPANY_BLOCKLIST: list[str] = []
@@ -162,6 +170,14 @@ REQUIREMENTS = re.compile(
 OPTIONAL_SECTION = re.compile(r"nice to have|advantages?\s*:|bonus points|preferred qualifications|יתרונות|יתרון\s*:", re.I)
 OPTIONAL_LINE = re.compile(r"nice to have|advantage|bonus|preferred|a plus|desirable|יתרון", re.I)
 LINE_BREAKS = ".\n•·"
+
+
+def days_posted(job: dict) -> int | None:
+    """Count the days since the board says the job was posted, or None when it gives no date."""
+    try:
+        return (date.today() - date.fromisoformat((job.get("posted") or "")[:10])).days
+    except ValueError:
+        return None
 
 
 def required_years(text: str) -> int | None:
@@ -270,6 +286,8 @@ def rejection_reason(job: dict, max_years: int) -> str | None:
 
     if any(name.lower() in company for name in COMPANY_BLOCKLIST):
         return "company blocked"
+    if (age := days_posted(job)) is not None and age > STALE_DAYS:
+        return "posted over six months ago"
     if match := ROLES.search(title):
         return f"non-engineering title ({match.group(1).lower()})"
     if match := SENIORITY.search(title):
@@ -284,7 +302,7 @@ def rejection_reason(job: dict, max_years: int) -> str | None:
     if SUPPORT_TITLES.search(title) and not SECURITY_ANALYST.search(title):
         return "support role"
     location = job.get("location") or ""
-    if (match := OUTSIDE.search(location)) and not INSIDE.search(location):
+    if OUTSIDE and (match := OUTSIDE.search(location)) and not (INSIDE and INSIDE.search(location)):
         return f"outside the commute area ({match.group(1).lower()})"
     if requires_advanced_degree(description):
         return "requires a master's or doctorate"

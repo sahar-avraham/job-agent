@@ -87,7 +87,8 @@ def inspect(entry: tuple[str, str], places: list[str], timeout: float) -> dict |
 
     local = 0
     for job in jobs:
-        where = job.get("location")
+        # Lever keeps the place under categories, so its postings read as having none without this.
+        where = fetch_jobs.lever_location(job) if board == "lever" else job.get("location")
         if isinstance(where, dict):
             where = where.get("name", "")
         where = str(where or "").lower()
@@ -103,12 +104,18 @@ def inspect(entry: tuple[str, str], places: list[str], timeout: float) -> dict |
     }
 
 
-def sweep(catalogues: dict[str, list[str]], region: str, workers: int, timeout: float, limit: int) -> None:
-    """Walk every token, saving as it goes so an interrupted sweep resumes where it stopped."""
+def sweep(catalogues: dict[str, list[str]], region: str, workers: int, timeout: float, limit: int,
+          again: bool = False) -> None:
+    """Walk every token, saving as it goes so an interrupted sweep resumes where it stopped.
+
+    With again, the earlier answers for these boards are dropped first, for a sweep whose check changed.
+    """
     places = fetch_jobs.REGIONS.get(region, [region])
     done: dict[str, dict] = {}
     if RESULT_FILE.exists():
         done = json.loads(RESULT_FILE.read_text(encoding="utf-8"))
+        if again:
+            done = {k: v for k, v in done.items() if k.split(":", 1)[0] not in catalogues}
         print(f"resuming, {len(done)} boards already checked")
 
     todo = [
@@ -179,6 +186,8 @@ def main() -> int:
     parser.add_argument("--limit", type=int, default=0, help="check only this many, for a quick trial")
     parser.add_argument("--min-jobs", type=int, default=1, help="ignore boards with fewer local jobs than this")
     parser.add_argument("--save", action="store_true", help="add the new boards to companies.json")
+    parser.add_argument("--board", choices=sorted(SOURCES), help="sweep only this system's catalogue")
+    parser.add_argument("--again", action="store_true", help="check the swept boards again, for a changed check")
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -186,8 +195,10 @@ def main() -> int:
 
     if args.sweep or args.refresh:
         catalogues = load_catalogues(args.refresh)
+        if args.board:
+            catalogues = {args.board: catalogues[args.board]}
         if args.sweep:
-            sweep(catalogues, args.region, args.workers, args.timeout, args.limit)
+            sweep(catalogues, args.region, args.workers, args.timeout, args.limit, args.again)
 
     already = {token for _, _, token in fetch_jobs.COMPANIES}
     report(args.min_jobs, already, args.save)

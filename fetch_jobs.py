@@ -14,6 +14,7 @@ import pathlib
 import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass
@@ -22,6 +23,8 @@ from datetime import datetime, timezone
 GREENHOUSE_URL = "https://boards-api.greenhouse.io/v1/boards/{token}/jobs"
 GREENHOUSE_URL_FULL = GREENHOUSE_URL + "?content=true"
 LEVER_URL = "https://api.lever.co/v0/postings/{token}?mode=json"
+# A Lever board kept in Europe answers only on the EU host; its token is written "eu:name".
+LEVER_EU_URL = "https://api.eu.lever.co/v0/postings/{token}?mode=json"
 ASHBY_URL = "https://api.ashbyhq.com/posting-api/job-board/{token}"
 # Comeet needs two ids per company, kept in COMPANIES as one token written "uid:token".
 COMEET_URL = "https://www.comeet.co/careers-api/2.0/company/{uid}/positions?token={token}&details={details}"
@@ -76,7 +79,7 @@ class Job:
     company: str
     title: str
     location: str
-    updated: str
+    posted: str
     url: str
     description: str = ""
 
@@ -120,7 +123,7 @@ def fetch_greenhouse(company: str, token: str, descriptions: bool = False) -> li
             company=company,
             title=job.get("title", ""),
             location=(job.get("location") or {}).get("name", ""),
-            updated=iso_day(job.get("updated_at")),
+            posted=iso_day(job.get("first_published") or job.get("updated_at")),
             url=job.get("absolute_url", ""),
             description=strip_html(job.get("content", "")) if descriptions else "",
         )
@@ -128,20 +131,40 @@ def fetch_greenhouse(company: str, token: str, descriptions: bool = False) -> li
     ]
 
 
+def lever_location(job: dict) -> str:
+    """Every place a Lever posting names, which sit under its categories, plus its country when no place says it."""
+    categories = job.get("categories") or {}
+    places = categories.get("allLocations") or [categories.get("location") or ""]
+    where = ", ".join(p for p in places if p)
+    if job.get("country") == "IL" and "israel" not in where.lower():
+        where = f"{where} · Israel" if where else "Israel"
+    return where
+
+
 def fetch_lever(company: str, token: str, descriptions: bool = False) -> list[Job]:
     """Read a Lever board, which returns a bare list and names the title field 'text'."""
-    payload = fetch_json(LEVER_URL.format(token=token))
+    payload = fetch_json(LEVER_EU_URL.format(token=token[3:]) if token.startswith("eu:") else LEVER_URL.format(token=token))
     return [
         Job(
             company=company,
             title=job.get("text", ""),
-            location=(job.get("categories") or {}).get("location", ""),
-            updated=iso_day(job.get("createdAt")),
+            location=lever_location(job),
+            posted=iso_day(job.get("createdAt")),
             url=job.get("hostedUrl", ""),
-            description=job.get("descriptionPlain", "") if descriptions else "",
+            description=lever_description(job) if descriptions else "",
         )
         for job in payload
     ]
+
+
+def lever_description(job: dict) -> str:
+    """The whole posting: Lever keeps the requirements in separate lists, apart from the description,
+    and the description alone left out "5+ years" and the like, which the filter and the scorer need."""
+    parts = [job.get("descriptionPlain") or ""]
+    for section in job.get("lists") or []:
+        parts.append(f"{section.get('text', '')}\n{strip_html(section.get('content', ''))}")
+    parts.append(job.get("additionalPlain") or "")
+    return "\n\n".join(p.strip() for p in parts if p and p.strip())
 
 
 def fetch_ashby(company: str, token: str, descriptions: bool = False) -> list[Job]:
@@ -152,7 +175,7 @@ def fetch_ashby(company: str, token: str, descriptions: bool = False) -> list[Jo
             company=company,
             title=job.get("title", ""),
             location=job.get("location", ""),
-            updated=iso_day(job.get("publishedAt")),
+            posted=iso_day(job.get("publishedAt")),
             url=job.get("jobUrl", ""),
             description=job.get("descriptionPlain", "") if descriptions else "",
         )
@@ -185,7 +208,7 @@ def fetch_comeet(company: str, token: str, descriptions: bool = False) -> list[J
             company=company,
             title=job.get("name", ""),
             location=comeet_location(job),
-            updated=iso_day(job.get("time_updated")),
+            posted=iso_day(job.get("time_updated")),
             # The hosted page, because a company's own link can carry a changing query string and the id is the link.
             url=job.get("url_comeet_hosted_page") or job.get("url_active_page") or "",
             description=" ".join(
@@ -198,7 +221,89 @@ def fetch_comeet(company: str, token: str, descriptions: bool = False) -> list[J
     ]
 
 
-FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "ashby": fetch_ashby, "comeet": fetch_comeet}
+def fetch_workday(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read a Workday site's jobs in Israel. The adapter lives in workday.py, imported when first needed."""
+    import workday
+    return workday.fetch(company, token, descriptions)
+
+
+WORKABLE_SEARCH = "https://jobs.workable.com/api/v1/jobs?location={token}"
+
+
+def fetch_workable(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read Workable's own job search for one country, which spans every company on Workable.
+
+    Unlike the other boards this is one entry for all of Workable's customers, so each job takes its
+    company's name from the posting. The search is the one jobs.workable.com runs, and it is not a
+    documented API, so a change on their side shows as this entry failing on the sources page.
+    """
+    jobs, page = [], None
+    for _ in range(50):
+        url = WORKABLE_SEARCH.format(token=urllib.parse.quote(token))
+        payload = fetch_json(url + (f"&pageToken={urllib.parse.quote(page)}" if page else ""))
+        for post in payload.get("jobs", []):
+            text = " ".join(post.get(k) or "" for k in ("description", "requirementsSection", "benefitsSection"))
+            jobs.append(Job(
+                company=(post.get("company") or {}).get("title") or company,
+                title=post.get("title", ""),
+                location="; ".join(post.get("locations") or []),
+                posted=(post.get("created") or post.get("updated") or "")[:10],
+                url=post.get("url", ""),
+                description=strip_html(text) if descriptions else "",
+            ))
+        page = payload.get("nextPageToken")
+        if not page or not payload.get("jobs"):
+            break
+    return jobs
+
+
+def fetch_smartrecruiters(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read a SmartRecruiters company's jobs in Israel. The adapter lives in smartrecruiters.py."""
+    import smartrecruiters
+    return smartrecruiters.fetch(company, token, descriptions)
+
+
+def fetch_amazon(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read Amazon's jobs in one country. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_amazon(company, token, descriptions)
+
+
+def fetch_eightfold(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read an Eightfold careers site, such as Microsoft's. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_eightfold(company, token, descriptions)
+
+
+def fetch_elbit(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read Elbit Systems' careers site. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_elbit(company, token, descriptions)
+
+
+def fetch_bob(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read a careers site hosted by Bob. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_bob(company, token, descriptions)
+
+
+def fetch_oracle(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read an Oracle Recruiting Cloud site, such as Dell's. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_oracle(company, token, descriptions)
+
+
+def fetch_techmap(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read the Tech Map's jobs at companies no other board reads. The adapter lives in scout.py."""
+    import scout
+    return scout.fetch(company, token, descriptions)
+
+
+FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "ashby": fetch_ashby, "comeet": fetch_comeet,
+            "workday": fetch_workday, "workable": fetch_workable, "smartrecruiters": fetch_smartrecruiters,
+            "amazon": fetch_amazon, "eightfold": fetch_eightfold,
+            "elbit": fetch_elbit, "bob": fetch_bob, "oracle": fetch_oracle,
+            "techmap": fetch_techmap}
 
 
 def fetch_company(entry: tuple[str, str, str], descriptions: bool = False) -> tuple[str, list[Job], str]:
@@ -236,7 +341,7 @@ def print_table(jobs: list[Job]) -> None:
     print(line)
     print("-" * len(line))
     for job in jobs:
-        cells = (job.company, job.title, job.location, job.updated)
+        cells = (job.company, job.title, job.location, job.posted)
         print("  ".join(truncate(cell, width).ljust(width) for cell, width in zip(cells, widths)))
 
 
@@ -299,7 +404,7 @@ def main() -> int:
     # A named region expands to its cities; anything else stays a plain substring.
     places = REGIONS.get(wanted, [wanted] if wanted else [])
     jobs = [job for job in jobs if matches(job, keywords, places)]
-    jobs.sort(key=lambda job: job.updated, reverse=True)
+    jobs.sort(key=lambda job: job.posted, reverse=True)
 
     print_table(jobs)
     print()

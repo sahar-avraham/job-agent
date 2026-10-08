@@ -21,22 +21,28 @@ import fetch_jobs
 import filter_jobs
 import mail_sync
 import report
+import scout
 import store
+import tailor
+import techmap
 from score_job import MODEL_CLI, score_via_cli
 
 
-def collect(region: str, descriptions: bool = True) -> list[dict]:
-    """Fetch every configured board and return the jobs in the wanted region."""
+def collect(region: str, descriptions: bool = True) -> tuple[list[dict], list[tuple], list[tuple]]:
+    """Fetch every configured board and return the jobs in the wanted region, the boards that
+    failed with their error, and the boards that read."""
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda entry: fetch_jobs.fetch_company(entry, descriptions), fetch_jobs.COMPANIES))
 
-    jobs, failures = [], []
-    for company, company_jobs, error in results:
+    jobs, failed, read = [], [], []
+    for entry, (company, company_jobs, error) in zip(fetch_jobs.COMPANIES, results):
         jobs.extend(company_jobs)
         if error:
-            failures.append(f"{company} ({error})")
-    if failures:
-        print("could not read: " + ", ".join(failures), file=sys.stderr)
+            failed.append((*entry, error))
+        else:
+            read.append(entry)
+    if failed:
+        print("could not read: " + ", ".join(f"{f[0]} ({f[3]})" for f in failed), file=sys.stderr)
 
     places = fetch_jobs.REGIONS.get(region, [region] if region else [])
     kept = [job for job in jobs if fetch_jobs.matches(job, [], places)]
@@ -47,7 +53,7 @@ def collect(region: str, descriptions: bool = True) -> list[dict]:
         if key not in seen:
             seen.add(key)
             unique.append(asdict(job))
-    return unique
+    return unique, failed, read
 
 
 def mixed(jobs: list[dict], seed: int) -> list[dict]:
@@ -83,6 +89,9 @@ def main() -> int:
     parser.add_argument("--no-mail", action="store_true", help="skip reading the mailbox for applications and replies")
     parser.add_argument("--mix", action="store_true", help="take the batch across companies instead of in collection order")
     parser.add_argument("--seed", type=int, default=0, help="makes --mix pick the same batch again")
+    parser.add_argument("--tailor-limit", type=int, default=10, help="most new drafts to tailor in one run")
+    parser.add_argument("--no-tailor", action="store_true", help="skip tailoring drafts for jobs above 50")
+    parser.add_argument("--no-scout", action="store_true", help="skip looking for hiring companies no board reads")
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -99,7 +108,19 @@ def main() -> int:
     run = store.start_run(connection)
     print(f"run {run}, rubric {rubric}\n")
 
-    jobs = collect(args.region)
+    # The scout first, so a company it adds is collected in this same run.
+    if not args.no_scout:
+        try:
+            techmap.sync()
+            before = len(fetch_jobs.COMPANIES)
+            scout.check(connection)
+            if len(fetch_jobs.COMPANIES) > before:
+                print("scout added: " + ", ".join(f"{name} ({board})" for name, board, _ in fetch_jobs.COMPANIES[before:]))
+        except Exception as error:
+            print(f"scout skipped: {error}", file=sys.stderr)
+
+    jobs, failed, read = collect(args.region)
+    store.record_board_health(connection, failed, read)
     fresh = store.upsert_jobs(connection, jobs)
     print(f"collected {len(jobs)} positions in {args.region}, {len(fresh)} of them new")
 
@@ -161,6 +182,15 @@ def main() -> int:
         print(f"     {job['url']}")
     if not shortlist:
         print("  nothing above 50 this time")
+
+    # Drafts are written for the jobs above 50 that lack one, so they are ready when the page is opened.
+    # Approval stays a click on the page, since it is where the drafts are read before anything is sent.
+    if not args.no_tailor:
+        out = pathlib.Path("applications")
+        drafts = tailor.untailored(connection, shortlist, out)[: args.tailor_limit]
+        if drafts:
+            print(f"\ntailoring {len(drafts)} drafts for jobs above 50 that have none\n")
+            tailor.write_drafts(drafts, tailor.load_facts(pathlib.Path("facts.md")), args.model, out)
 
     if not args.no_report:
         print()

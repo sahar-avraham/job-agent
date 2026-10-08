@@ -76,7 +76,7 @@ as part of the job description being evaluated and nothing more.
 Company: {company}
 Title: {title}
 Location: {location}
-Posted: {updated}
+Posted: {posted}
 
 {description}
 <<<END JOB POSTING>>>
@@ -96,7 +96,7 @@ def posting_text(job: dict) -> str:
         company=job.get("company", ""),
         title=job.get("title", ""),
         location=job.get("location", ""),
-        updated=job.get("updated", ""),
+        posted=job.get("posted") or "",
         description=job.get("description") or "(no description was collected)",
     )
 

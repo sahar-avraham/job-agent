@@ -19,6 +19,7 @@ import sqlite3
 import sys
 from datetime import date, datetime, timezone
 
+DRAFTS = pathlib.Path("applications")  # where tailor.py writes drafts, relative to the project folder
 DB_PATH = "job_agent.db"
 
 SCHEMA = """
@@ -30,7 +31,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     url         TEXT NOT NULL,
     description TEXT,
     first_seen  TEXT NOT NULL,
-    last_seen   TEXT NOT NULL
+    last_seen   TEXT NOT NULL,
+    posted      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS scores (
@@ -118,6 +120,56 @@ CREATE TABLE IF NOT EXISTS form_answers (
     UNIQUE (job_id, question)
 );
 
+-- The candidate's answer to a general form question, by its normalised wording, so the next
+-- form that asks the same thing is filled without asking again.
+CREATE TABLE IF NOT EXISTS answer_memory (
+    question    TEXT PRIMARY KEY,
+    answer      TEXT NOT NULL,
+    recorded_at TEXT NOT NULL
+);
+
+-- The model's draft for a form question no standing answer covers, kept so reopening the form
+-- does not ask the model again. An empty answer means the model had no honest one to give; a
+-- flag is the fact check's doubt about the answer, shown to the candidate next to it.
+CREATE TABLE IF NOT EXISTS form_drafts (
+    job_id      TEXT NOT NULL,
+    field_id    TEXT NOT NULL,
+    answer      TEXT NOT NULL,
+    flag        TEXT NOT NULL DEFAULT '',
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY (job_id, field_id)
+);
+
+-- Small facts about the system itself, such as when the mailbox was last checked.
+CREATE TABLE IF NOT EXISTS meta (
+    key    TEXT PRIMARY KEY,
+    value  TEXT NOT NULL
+);
+
+-- Boards that failed to read in the latest collection, kept until one reads again, so a company
+-- that moved to another system shows up on the page instead of vanishing quietly.
+CREATE TABLE IF NOT EXISTS scout (
+    company    TEXT PRIMARY KEY,
+    jobs       INTEGER NOT NULL DEFAULT 0,
+    careers    TEXT,
+    system     TEXT,
+    token      TEXT,
+    status     TEXT NOT NULL,
+    note       TEXT,
+    checked_at TEXT NOT NULL,
+    seen_at    TEXT
+);
+
+CREATE TABLE IF NOT EXISTS board_failures (
+    company       TEXT NOT NULL,
+    board         TEXT NOT NULL,
+    token         TEXT NOT NULL,
+    error         TEXT NOT NULL,
+    first_failed  TEXT NOT NULL,
+    last_failed   TEXT NOT NULL,
+    PRIMARY KEY (board, token)
+);
+
 -- Every message the mail step has read once, so none is read or classified twice.
 CREATE TABLE IF NOT EXISTS mail_messages (
     message_id     TEXT PRIMARY KEY,
@@ -161,7 +213,37 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
     connection.executescript(SCHEMA)
+    # A database made before the posting date was kept gains the column here.
+    if "posted" not in {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}:
+        connection.execute("ALTER TABLE jobs ADD COLUMN posted TEXT")
     return connection
+
+
+def record_board_health(connection: sqlite3.Connection, failed: list[tuple[str, str, str, str]],
+                        read: list[tuple[str, str, str]]) -> None:
+    """Keep each failing board with the date it first failed, and forget a board once it reads again."""
+    at = now()
+    for company, board, token, error in failed:
+        connection.execute(
+            "INSERT INTO board_failures (company, board, token, error, first_failed, last_failed) VALUES (?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT (board, token) DO UPDATE SET error = excluded.error, last_failed = excluded.last_failed",
+            (company, board, token, error, at, at))
+    connection.executemany("DELETE FROM board_failures WHERE board = ? AND token = ?", [(b, t) for _, b, t in read])
+    connection.commit()
+
+
+def board_failures(connection: sqlite3.Connection) -> list[dict]:
+    return [dict(row) for row in connection.execute("SELECT * FROM board_failures ORDER BY first_failed, company")]
+
+
+def get_meta(connection: sqlite3.Connection, key: str) -> str | None:
+    row = connection.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else None
+
+
+def set_meta(connection: sqlite3.Connection, key: str, value: str) -> None:
+    connection.execute("INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value))
+    connection.commit()
 
 
 def start_run(connection: sqlite3.Connection) -> int:
@@ -189,13 +271,16 @@ def upsert_jobs(connection: sqlite3.Connection, jobs: list[dict]) -> list[str]:
         if existing:
             # Refresh the text too, because a posting can be edited after publication.
             connection.execute(
-                "UPDATE jobs SET last_seen = ?, description = ?, title = ?, location = ? WHERE id = ?",
-                (stamp, job.get("description", ""), job.get("title", ""), job.get("location", ""), identifier),
+                # A board that gives no date this time, as Workday does for a description read earlier, keeps the known one.
+                "UPDATE jobs SET last_seen = ?, description = ?, title = ?, location = ?,"
+                " posted = COALESCE(NULLIF(?, ''), posted) WHERE id = ?",
+                (stamp, job.get("description", ""), job.get("title", ""), job.get("location", ""),
+                 job.get("posted") or "", identifier),
             )
         else:
             connection.execute(
-                "INSERT INTO jobs (id, company, title, location, url, description, first_seen, last_seen)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (id, company, title, location, url, description, first_seen, last_seen, posted)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     identifier,
                     job.get("company", ""),
@@ -205,6 +290,7 @@ def upsert_jobs(connection: sqlite3.Connection, jobs: list[dict]) -> list[str]:
                     job.get("description", ""),
                     stamp,
                     stamp,
+                    job.get("posted") or None,
                 ),
             )
             fresh.append(identifier)
@@ -277,6 +363,32 @@ def ranked(connection: sqlite3.Connection, rubric: str, minimum: int = 0, ids: l
 def stem(company: str, title: str) -> str:
     """Name the files of one job the same way everywhere they are written or looked up."""
     return re.sub(r"[^a-z0-9]+", "-", f"{company}-{title}".lower()).strip("-")[:60]
+
+
+def job_stem(job: dict, connection: sqlite3.Connection | None = None) -> str:
+    """The file name of one job's drafts and files, told apart from another job with the same company and title.
+
+    The plain name stays with the job whose draft already uses it, so no file written earlier is lost;
+    with no draft yet, it goes to the twin seen first. Every other twin adds the start of its own id.
+    """
+    base = stem(job.get("company", ""), job.get("title", ""))
+    own_id = job.get("id") or job_id(job.get("url", ""))
+    draft = DRAFTS / f"{base}.json"
+    if draft.is_file():
+        try:
+            owner = job_id(json.loads(draft.read_text(encoding="utf-8"))["job"]["url"])
+            return base if owner == own_id else f"{base[:53]}-{own_id[:6]}"
+        except (ValueError, KeyError, TypeError):
+            pass
+    own = connection is None
+    connection = connection or sqlite3.connect(DB_PATH)
+    try:
+        first = connection.execute("SELECT id FROM jobs WHERE company = ? AND title = ? ORDER BY first_seen, id LIMIT 1",
+                                   (job.get("company", ""), job.get("title", ""))).fetchone()
+    finally:
+        if own:
+            connection.close()
+    return base if first is None or first[0] == own_id else f"{base[:53]}-{own_id[:6]}"
 
 
 def check_date(text: str) -> str:
@@ -384,13 +496,13 @@ def applied_jobs(connection: sqlite3.Connection) -> dict[str, dict]:
     return out
 
 
-ANSWER_SOURCES = {"standing", "drafted", "you"}
+ANSWER_SOURCES = {"standing", "drafted", "you", "file"}
 
 
 def save_form_answers(connection: sqlite3.Connection, job: str, answers: list[tuple[str, str, str]]) -> None:
     """Store what a form was told, as (question, answer, source), replacing an earlier answer to the same question.
 
-    The source says where the answer came from: answers.md, a per-job draft, or typed by hand.
+    The source says where the answer came from: answers.md, a per-job draft, typed by hand, or a file attached.
     """
     for question, answer, source in answers:
         if source not in ANSWER_SOURCES:
