@@ -15,14 +15,22 @@ python -m venv .venv
 
 ## The normal day
 
-**Look for new jobs.** Collects, filters, scores whatever is new, writes the report.
+**Look for new jobs.** First checks the Israeli Tech Map for companies hiring in your
+fields that no board reads, and adds the ones it can read. Then collects, filters, scores
+whatever is new (up to 25 a run), tailors a draft CV and letter for up to 10 jobs above 50 that
+have none, and writes the report. Postings older than six months are dropped, and ones older
+than three months carry a badge. A company already applied to gets no new draft, and neither
+does a job known only from the Tech Map. Approving a draft into Word and PDF files stays a
+click on the page. `--no-tailor` skips the drafts, `--no-scout` the company check, and
+`--limit 100` scores more in one run.
 
 ```
 python run.py
 ```
 
 **Open the report with working buttons.** Pick jobs, tailor CVs, make Word files,
-mark what you sent, track it. Ctrl+C to stop.
+mark what you sent, track it. Ctrl+C to stop. Opening the tracking page reads the
+mailbox when it was not read in the last hour, and its button reads it now.
 
 ```
 python serve.py
@@ -36,6 +44,7 @@ That's most of it. The rest is for when you need something specific.
 |---|---|
 | Tailor CVs for the top jobs, no browser | `python tailor.py` |
 | Tailor just one job | `python tailor.py --only "salt"` |
+| Tailor every job above 50 still without a draft | `python tailor.py --missing --limit 20` |
 | Re-check existing drafts for invented facts | `python tailor.py --audit-only` |
 | Turn one draft into Word files | `python approve.py "salt security"` |
 | See where every application stands | `python tracking.py` |
@@ -55,6 +64,15 @@ The same without the page:
 python submit.py <job id> --preview
 python submit.py <job id>
 ```
+
+**Application forms.** Tick approved Greenhouse, Workday, Lever or SmartRecruiters jobs
+and press "פתח ומלא טפסים בכרום". Each form opens in Chrome and the job-agent extension fills
+it: details, the approved CV and letter, experience and education, and every question
+`answers.md` or an earlier form can answer. A panel on the form lists what is left for you.
+An answer you correct by hand is remembered for later forms. Read each step, press its own
+Next and Submit buttons; the application is recorded when the confirmation appears. Needs `serve.py` running, and the extension
+loaded once: `chrome://extensions`, Developer mode, "Load unpacked", choose the
+`extension` folder. After changing its files, press reload on its card.
 
 ## Mail
 
@@ -115,10 +133,47 @@ the site runs on Comeet, this adds the company.
 python comeet.py --add https://www.example.co.il/careers/some-job/ --save
 ```
 
+**Workday companies hiring in Israel.** Every few weeks, like the other catalogues. The sweep asks
+about 13,000 Workday sites, about 40 minutes; --save adds the ones with jobs in Israel.
+
+```
+python workday.py --sweep
+python workday.py --save
+```
+
+**Israeli companies from the Israeli Tech Map.** Every few weeks. Downloads the map's company
+list and daily job list, checks every Comeet, Greenhouse, Lever, Ashby or Workday board it names
+that is not tracked yet, and adds the ones with jobs in Israel. A few minutes.
+
+```
+python techmap.py --save
+```
+
+**SmartRecruiters companies hiring in Israel.** Every few weeks. Searches Israeli cities on
+SmartRecruiters' own job search and lists the companies found; `--skip` leaves out ones not in tech.
+
+```
+python smartrecruiters.py
+python smartrecruiters.py --save --skip SomeIdentifier
+```
+
+**Lever only, after a change to how its boards are checked.**
+
+```
+python catalogue.py --sweep --board lever --again --save
+```
+
 **One company the catalogue doesn't know.**
 
 ```
 python discover_boards.py "Company Name"
+```
+
+**Companies the Tech Map says are hiring, checked again.** `run.py` checks new ones by
+itself; this checks every company again and prints the table the sources page shows.
+
+```
+python scout.py --again
 ```
 
 **After editing `profile.md`.** Nothing to run on purpose. The next `run.py`
