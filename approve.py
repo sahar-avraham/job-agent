@@ -45,8 +45,20 @@ def show(selection: dict, facts: dict[str, str]) -> None:
 
 
 def reaudit(selection: dict, facts: dict[str, str], folder: pathlib.Path, stem: str, model: str) -> bool:
-    """Run the check again on the text as it stands, and report what it says."""
-    document = (folder / f"{stem}.txt").read_text(encoding="utf-8")
+    """Check the text that is about to be written, and report what it says.
+
+    The files are built from the selection and today's facts, so a draft written before a fact changed
+    would be checked on its old wording. The text and the letter are rebuilt from today's facts first,
+    and the draft on the page is rewritten to match, so what is read, checked and sent are the same.
+    """
+    # A draft from before the fixed letter has no new_field; it gets the fixed letter without that line.
+    chosen = tailor.Tailored.model_validate({"new_field": "", **selection["chosen"]})
+    chosen.cover_note = tailor.cover_letter(chosen, facts, selection["job"])
+    selection["chosen"]["cover_note"] = chosen.cover_note
+    document = tailor.document_text(chosen, facts, selection["job"])
+    (folder / f"{stem}.txt").write_text(document, encoding="utf-8")
+    (folder / f"{stem}.html").write_text(tailor.render_html(chosen, facts, selection["job"]), encoding="utf-8")
+    (folder / f"{stem}.json").write_text(json.dumps(selection, ensure_ascii=False, indent=2), encoding="utf-8")
     text, _ = claude_cli.ask(
         tailor.AUDIT_PROMPT.format(
             facts=tailor.facts_block(facts),

@@ -33,15 +33,11 @@ SKILL_GROUPS = [
 # Printed for every job, whatever the selection, as the core a recruiter looks for first.
 # Everything else appears only when the selection names it, so the list reads as what the
 # candidate can be interviewed on for this role rather than everything ever touched.
-# K14, cloud platforms known from the support side, is kept as a fact but never listed:
-# in a skills list it reads as hands-on building, and the summary already says it right.
+# A skill left out of SKILL_GROUPS is kept as a fact the model may weigh, but never listed.
 CORE_SKILLS = {"K1", "K4", "K8", "K12", "K10"}
-SKILL_DISPLAY = {
-    "K13": "Linux",
-    # The long forms are written for the model to judge; the skills line needs the short ones.
-    "K17": "Claude Code and Gemini for scaffolding, refactoring and code review",
-    "K19": "Structured model output against a schema, prompt design, independent verification pass",
-}
+# A skill's short form for the skills line is its fact id with a "d", such as K17d, kept in facts.md;
+# the long form is written for the model to judge, and the skills line needs the short one.
+DISPLAY_SUFFIX = "d"
 
 # Each project's bullets share the letter of its header id; the first bullet introduces it.
 PROJECTS = [("P", "PH1", "P1"), ("J", "JH1", "J1"), ("A", "AH1", "A1"), ("C", "CH1", "C1")]
@@ -76,6 +72,7 @@ MAX_COURSES = 4
 # A single course on the line reads like the only good grade, so one choice is paired with the
 # first of these that fits any software role and was not chosen already.
 COURSE_COMPANIONS = ["G3", "G8"]
+OPTIONAL_EDUCATION = ["E4"]
 
 
 def education_lines(chosen_ids: list[str], facts: dict[str, str]) -> list[str]:
@@ -93,6 +90,8 @@ def education_lines(chosen_ids: list[str], facts: dict[str, str]) -> list[str]:
     lines = [facts["E1"]] if "E1" in facts else []
     if courses:
         lines.append("Selected coursework: " + ", ".join(courses) + ".")
+    # Academic work that suits only some roles prints only when the selection asked for it.
+    lines += [facts[i] for i in OPTIONAL_EDUCATION if i in chosen_ids and i in facts]
     if "E3" in facts:
         lines.append(facts["E3"])
     return lines
@@ -121,7 +120,7 @@ def build(chosen, facts: dict[str, str]) -> Layout:
     wanted = CORE_SKILLS | set(get("skill_ids") or [])
     skills = []
     for name, ids in SKILL_GROUPS:
-        texts = [SKILL_DISPLAY.get(i, facts[i]) for i in ids if i in facts and i in wanted]
+        texts = [facts.get(i + DISPLAY_SUFFIX, facts[i]) for i in ids if i in facts and i in wanted]
         if texts:
             skills.append((name, ", ".join(texts)))
 

@@ -9,7 +9,7 @@ above its section. cv_layout.py maps the letters to sections.
 
 ## Headline
 
-- [H1] Backend Developer, Java and Spring Boot | tags: backend, java
+- [H1] Junior Backend Developer, Java and SQL | tags: backend, java
 
 ## Summary lines
 
@@ -29,8 +29,8 @@ above its section. cv_layout.py maps the letters to sections.
 
 ## Main project
 
-- [PH1] Shift Planner  |  Java, Spring Boot, MySQL  |  github.com/you/shift-planner | tags: header
-- [P1] Full-stack system for building weekly shift schedules. | tags: fullstack
+- [PH1] Library Loans  |  Java, Spring Boot, PostgreSQL  |  github.com/you/library-loans | tags: header
+- [P1] Web system for tracking book loans and reservations. | tags: fullstack
 
 ## Second project
 
@@ -47,9 +47,23 @@ above its section. cv_layout.py maps the letters to sections.
 - [R2] Summary lines: S5, S6, S3 in that order. | tags: rule
 - [W1] A few sentences in your own words, so cover notes sound like you. Never printed. | tags: style
 
-## Motivation, for the cover note only
+## Cover letter, fixed lines
 
-- [M1] I want somewhere to settle and grow. | tags: motivation
+The whole letter. The header names the company and the role, and {field} is filled in; L2 prints only when the company's field is new to you.
+
+- [L1] Your opening line, in your own words. | tags: letter, opening
+- [L2] A line using {field}, printed only when the company's field is new to you. | tags: letter, new-field
+- [L3] A closing line in your own words. | tags: letter, closing
+- [L4] Anything a recruiter needs to know, such as when you can start. | tags: letter, availability
+- [L5] One line on how you studied or learn, in your own words. | tags: letter, study
+
+## Problem stories, for form questions only
+
+- [T1] A problem you worked through, in your own words, for form questions about one. | tags: story
+
+## Motivation, not sent to the model
+
+- [M1] I want a team where I keep learning from people better than me. | tags: motivation
 
 ## Skills
 

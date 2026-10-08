@@ -67,7 +67,7 @@ def comeet_address(job: dict) -> str:
 
 def approved_files(job: dict, ready: pathlib.Path, drafts: pathlib.Path) -> tuple[pathlib.Path, pathlib.Path, str]:
     """Return the approved CV, cover letter and cover note, or say which step is missing."""
-    stem = store.stem(job["company"], job["title"])
+    stem = store.job_stem(job)
     # The PDF when there is one, because it looks the same in every viewer; the Word file otherwise.
     cv, cover = (next((p for p in (ready / f"{stem}-{kind}.pdf", ready / f"{stem}-{kind}.docx") if p.is_file()),
                       ready / f"{stem}-{kind}.docx") for kind in ("cv", "cover-letter"))
@@ -94,7 +94,8 @@ def compose(job: dict, sender: str, recipient: str, note: str, files: list[pathl
     # the letter goes only in the attachment and the body stays short, and a recruiter never
     # reads the same letter twice however the system shows the mail.
     signature = "\n".join(p for p in (name, settings.get("CANDIDATE_PHONE")) if p)
-    message.set_content(f"Hello,\n\nI'm applying for the {job['title']} position. "
+    # The subject carries the posting's title, so the body does not repeat it in a sentence.
+    message.set_content("Hello,\n\nI'm applying for this position. "
                         "My CV and cover letter are attached.\n\nThank you for your time,\n" + signature)
     for file in files:
         kind = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
