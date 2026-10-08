@@ -1,0 +1,80 @@
+{
+  "manifest_version": 3,
+  "name": "job-agent forms",
+  "version": "0.1.0",
+  "description": "Fills Greenhouse, Workday, Lever and SmartRecruiters application forms from the local job-agent server. It never submits a form.",
+  "permissions": [
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:8777/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "job-agent: on, click to turn off"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://job-boards.greenhouse.io/*",
+        "https://job-boards.eu.greenhouse.io/*",
+        "https://boards.greenhouse.io/*",
+        "https://boards.eu.greenhouse.io/*"
+      ],
+      "js": [
+        "fillers.js",
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://job-boards.greenhouse.io/*",
+        "https://job-boards.eu.greenhouse.io/*",
+        "https://boards.greenhouse.io/*",
+        "https://boards.eu.greenhouse.io/*"
+      ],
+      "js": [
+        "page.js"
+      ],
+      "world": "MAIN",
+      "all_frames": true,
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.myworkdayjobs.com/*"
+      ],
+      "js": [
+        "fillers.js",
+        "workday.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://jobs.lever.co/*",
+        "https://jobs.eu.lever.co/*"
+      ],
+      "js": [
+        "fillers.js",
+        "lever.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://jobs.smartrecruiters.com/oneclick-ui/*",
+        "https://www.smartr.me/oneclick-ui/*"
+      ],
+      "js": [
+        "fillers.js",
+        "smartrecruiters.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ]
+}
