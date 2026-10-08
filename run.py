@@ -136,7 +136,12 @@ def main() -> int:
     todo = kept if args.rescore else store.unscored(connection, kept_ids, rubric)
     skipped = [job for job in todo if store.job_id(job["url"]) in settled]
     todo = [job for job in todo if store.job_id(job["url"]) not in settled]
-    print(f"{len(todo)} need an answer from the model" + (f", {len(skipped)} skipped as sent or removed" if skipped else ""))
+    # A job known only by its title is never scored: without the posting's requirements a score is a guess.
+    # It waits on the page until its full text is found.
+    blind = [job for job in todo if scout.is_map_job(job)]
+    todo = [job for job in todo if not scout.is_map_job(job)]
+    print(f"{len(todo)} need an answer from the model" + (f", {len(skipped)} skipped as sent or removed" if skipped else "")
+          + (f", {len(blind)} wait for their full text" if blind else ""))
 
     if args.dry_run:
         for job in todo[:20]:

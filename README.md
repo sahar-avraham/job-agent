@@ -31,7 +31,7 @@ company discovery ──> public ATS feeds ──> collect ──> hard rules �
 | Stage | File | What it does |
 |---|---|---|
 | Collect | `fetch_jobs.py` | Adapters for the ATS feeds, normalized into one job shape with its posting date |
-| More boards | `workday.py`, `smartrecruiters.py`, `employers.py` | Workday sites, SmartRecruiters companies, and large employers on systems of their own (Amazon, Eightfold, Oracle Recruiting Cloud, Bob, Elbit) |
+| More boards | `workday.py`, `smartrecruiters.py`, `employers.py` | Workday sites, SmartRecruiters companies, and large employers on systems of their own (Amazon, Google, Eightfold, Oracle Recruiting Cloud, Bob, Elbit) |
 | Find companies | `catalogue.py`, `comeet.py`, `techmap.py` | Sweep public board catalogues, the Common Crawl index and the Israeli Tech Map for companies hiring locally |
 | Discover | `scout.py` | Every run: companies the Tech Map lists as hiring in the wanted fields that no board reads; their careers page is checked for a known system, else their jobs are taken from the map's own rows |
 | Hard rules | `filter_jobs.py` | Title, seniority, discipline, degree, years, posting age and commute rules, no model |
@@ -53,8 +53,9 @@ company discovery ──> public ATS feeds ──> collect ──> hard rules �
 - **Find companies by who is hiring, not by who is famous.** The Tech Map's daily job
   lists say which companies hire in the wanted fields. One that no board reads has its
   careers page searched for a known hiring system and is added when it has jobs here;
-  one that cannot be read keeps its jobs from the map's rows, marked as known by title
-  only, and gets no tailored CV.
+  one that cannot be read keeps its jobs from the map's rows, whose full text is looked up
+  on devjobs.co.il by the posting's number. A job whose text is not found is listed but
+  never scored, since a score from a title alone is a guess.
 - **The model chooses, it does not write.** A tailored CV is a selection of fact ids
   from `facts.md`, printed in a fixed layout. The cover letter is fixed lines the
   candidate wrote, kept in `facts.md`. The model only names the company's field when it is
@@ -141,7 +142,6 @@ jobs come from the Tech Map's rows when it lists them.
 - Only Comeet positions can be submitted from the page. Forms on Greenhouse, Workday,
   Lever and SmartRecruiters are filled by the extension and sent by the candidate; other
   systems are filled by hand.
-- Jobs known only from the Tech Map are scored on their title, level and field, without
-  the posting's text.
+- Jobs known only from the Tech Map wait unscored until their full text is found.
 - There is no automated test suite yet. The evaluation sets measure the scoring, not
   the code.

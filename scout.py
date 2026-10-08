@@ -29,6 +29,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 import comeet
+import devjobs
 import fetch_jobs
 import mail_sync
 import store
@@ -76,7 +77,8 @@ def map_jobs() -> list[dict]:
 def tracked_names() -> list[str]:
     """Names of the companies a board reads, plus the map's names of those the scout matched to a board,
     since the map may call a company otherwise ("Landa Digital Printing" for "Landa Corporation")."""
-    names = [name for name, board, _ in fetch_jobs.COMPANIES if board not in ("techmap", "workable")]
+    # Workable and DevJobs read only some of a company's jobs, so the map's other jobs there still count.
+    names = [name for name, board, _ in fetch_jobs.COMPANIES if board not in ("techmap", "workable", "devjobs")]
     try:
         connection = store.connect()
         names += [row[0] for row in connection.execute("SELECT company FROM scout WHERE status = 'added'")]
@@ -233,17 +235,42 @@ def is_map_job(job: dict) -> bool:
     return (job.get("description") or "").startswith(MAP_NOTE)
 
 
+def known_texts() -> dict[str, tuple[str, str]]:
+    """Full texts already found for map jobs, by link, so each posting is looked up once."""
+    try:
+        connection = store.connect()
+        rows = connection.execute("SELECT url, description, posted FROM jobs WHERE url LIKE '%linkedin.com/jobs/view%'"
+                                  " AND description != '' AND description NOT LIKE ?", (MAP_NOTE + "%",)).fetchall()
+        connection.close()
+        return {url: (text, posted or "") for url, text, posted in rows}
+    except Exception:
+        return {}
+
+
 def fetch(company: str, token: str, descriptions: bool = False) -> list[fetch_jobs.Job]:
     """The map's jobs at companies that no other board reads, taken from the map's own rows.
 
-    A row has no description, so the text says what is known instead, and the model sees it is thin.
-    The map's date is the day of its list, not of the posting, so the posting date is left unknown.
+    A job that a company's DevJobs page already lists is left to that board. Each other one whose title
+    passes the hard rules is looked up on DevJobs by its LinkedIn job number;
+    found there, it carries the posting's full text and date like a job from any board. A job not found
+    keeps a text that says only the title is known, and is never scored (run.py), since a score from a
+    title alone is a guess. The map's own date is the day of its list, so it is not taken as the posting's.
     """
     rows = map_jobs()
     missing = untracked(rows)
+    covered: dict[str, set[str]] = {}
+    for name, board, slug in fetch_jobs.COMPANIES:
+        if board == "devjobs" and name in missing:
+            try:
+                covered.setdefault(name, set()).update(card[0] for card in devjobs.cards(slug))
+            except Exception:
+                pass
     jobs = []
     for row in rows:
         if row["company"] not in missing:
+            continue
+        number = devjobs.LINKEDIN_NUMBER.search(row.get("url") or "")
+        if number and number.group(1) in covered.get(row["company"], set()):
             continue
         link = urllib.parse.urlsplit(row.get("url") or "")
         query = urllib.parse.urlencode([(k, v) for k, v in urllib.parse.parse_qsl(link.query) if not k.startswith("utm_")])
@@ -256,6 +283,20 @@ def fetch(company: str, token: str, descriptions: bool = False) -> list[fetch_jo
             description=(f"{MAP_NOTE}, with no posting text: level {row.get('level') or 'unknown'},"
                          f" field {row['field']}, company size {row.get('size') or 'unknown'}.") if descriptions else "",
         ))
+    if descriptions:
+        known = known_texts()
+
+        def complete(job: fetch_jobs.Job) -> fetch_jobs.Job:
+            if job.url in known:
+                job.description, job.posted = known[job.url]
+            elif workday.worth_reading(job.title):
+                text, posted = devjobs.full_text(job.url)
+                if text:
+                    job.description, job.posted = text, posted
+            return job
+
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            jobs = list(pool.map(complete, jobs))
     return jobs
 
 

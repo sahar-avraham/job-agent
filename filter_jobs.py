@@ -26,6 +26,10 @@ SENIORITY_BLOCKLIST = [
     "senior", "sr", "sr.", "staff", "principal", "lead", "head of", "director",
     "vp", "vice president", "manager", "architect", "expert", "chief", "leader", "team leader",
     "iii", "iv", "10x", "team lead", "tech lead", "group leader", "בכיר", "בכירה", "ראש צוות",
+    # A doctoral internship and a technical leadership role, found among the waiting jobs on 2026-10-08.
+    "phd", "leadership",
+    # "Experienced" in a title, 2026-10-08: five scored under the current rubric, the highest 42.
+    "experienced", "מנוסה", "מנוסה.ת",
 ]
 
 # Titles containing any of these are dropped, because the role is not technical at all.
@@ -47,6 +51,9 @@ LOW_SCORING_BLOCKLIST = [
     "qa", "quality", "test", "tester", "testing", "בודק", "בודקת", "בדיקות", "בדיקה", "איכות", "ולידציה", "ניסויים",
     "verification", "validation", "field", "project engineer", "vlsi",
     "security researcher", "vulnerability researcher", "malware researcher", "threat researcher",
+    # Vision and signal work, 2026-10-08: every one scored so far stayed at 14 or below.
+    "computer vision", "cv", "deep learning", "image processing", "signal processing",
+    "עיבוד תמונה", "לעיבוד תמונה", "עיבוד אות", "לעיבוד אות", "ראיה ממוחשבת", "ראייה ממוחשבת",
 ]
 
 # Engineering that is not software. "Engineer" alone let mechanical and hardware roles through.
@@ -57,9 +64,16 @@ DISCIPLINE_BLOCKLIST = [
     "npi", "packaging", "thermal", "materials", "technician", "technicians",
     # Abbreviations the first list missed, found scoring 1 to 7 in batch 4.
     "hw", "ate", "qc", "failure analysis", "labview",
-    # The same disciplines in Hebrew, which came with Elbit's titles once Hebrew engineers passed.
+    # The same disciplines in Hebrew, which came with Hebrew titles once Hebrew engineers passed.
     "מכונות", "מכני", "מכנית", "כימיה", "חשמל", "אלקטרוניקה", "תהליך", "תפי", "תפ\"י", "תעו\"נ",
     "ייצור", "יצור", "חומרה", "טכנאי", "הנדסאי", "אופטיקה",
+    # Physical engineering from the large employers and the Tech Map, 2026-10-08: of every title like these
+    # ever scored, none reached 50 (the highest 39).
+    "antenna", "servo", "structural", "aerodynamics", "aerodynamic", "component engineer", "radio frequency",
+    "power delivery", "laser", "camera design", "cfd", "plc", "q&r", "planning & control",
+    "production engineer", "production integration", "אופטי", "אופטית", "אופטיות", "מכאני", "מכאנית",
+    # The same kinds in Hebrew titles: electronic CAD, transmitters, magnetics, guidance and control.
+    "cad", "תיב\"מ", "משדרים", "מגנטיקה", "הנחיה ובקרה",
     # Chip design, firmware and manufacturing titles from Workday, 2026-09-30: 24 scored across all
     # jobs so far and none reached 50, the highest a firmware role at 43.
     "firmware", "rtl", "dft", "sta", "circuit", "board design", "logic design", "signal integrity",
@@ -74,7 +88,7 @@ TITLE_ALLOWLIST = [
     "fullstack", "frontend", "front end", "java", "python", "devops", "devsecops", "sre",
     "infrastructure", "platform", "cloud", "reliability", "security", "support",
     "מפתח", "מפתחת", "מפתח.ת", "מפתח/ת", "תוכניתן", "תוכניתנית", "תמיכה",
-    # Elbit writes most titles in Hebrew, and its software and systems engineers were dropped, 2026-10-08.
+    # Some large employers write most titles in Hebrew, and their software engineers were dropped, 2026-10-08.
     "מהנדס", "מהנדסת",
 ]
 
@@ -127,6 +141,15 @@ SENIORITY = phrases(SENIORITY_BLOCKLIST)
 ROLES = phrases(ROLE_BLOCKLIST)
 DISCIPLINES = phrases(DISCIPLINE_BLOCKLIST)
 LOW_SCORING = phrases(LOW_SCORING_BLOCKLIST)
+# Two kinds that score low unless a word in the title says otherwise, measured 2026-10-08 under the
+# current rubric: algorithm roles that do not say software (13 scored, the highest 42), and embedded or
+# real-time roles that are not junior (17 scored, the highest 48; the two above 50 were junior roles).
+ALGORITHM = phrases(["algorithm", "algorithms", "אלגוריתם", "אלגוריתמים", "אלגוריתמי", "אלגוריתמיקה"])
+# Software work inside an algorithm team, its infrastructure, tools, platform or data, is kept: it is the
+# way into such a team from software, as Samsung's "Algorithm's Infrastructure Student" asks only CS and Python.
+SOFTWARE_WORD = phrases(["software", "תוכנה", "infrastructure", "infra", "tools", "tooling", "platform",
+                         "data", "תשתיות", "תשתית", "כלים", "פלטפורמה"])
+EMBEDDED = phrases(["embedded", "rt", "real time", "real-time", "firmware", "rt-embedded"])
 ALLOWED = phrases(TITLE_ALLOWLIST)
 JUNIOR_TITLE = phrases(JUNIOR_TITLE_WORDS)
 # Analysts pass only for security analysis and threat hunting, the one analyst kind wanted.
@@ -296,6 +319,10 @@ def rejection_reason(job: dict, max_years: int) -> str | None:
         return f"not software ({match.group(1).lower()})"
     if match := LOW_SCORING.search(title):
         return f"role that scores low ({match.group(1).lower()})"
+    if ALGORITHM.search(title) and not SOFTWARE_WORD.search(title):
+        return "role that scores low (algorithm role without software)"
+    if EMBEDDED.search(title) and not JUNIOR_TITLE.search(title):
+        return "role that scores low (embedded role that is not junior)"
     if not ALLOWED.search(title) and not SECURITY_ANALYST.search(title):
         return "title outside target roles"
 

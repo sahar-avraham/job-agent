@@ -19,7 +19,8 @@ import store
 BOARD_LABELS = {"comeet": "Comeet", "greenhouse": "Greenhouse", "workday": "Workday", "ashby": "Ashby", "lever": "Lever",
                 "workable": "Workable", "smartrecruiters": "SmartRecruiters",
                 "amazon": "Amazon", "eightfold": "Eightfold",
-                "elbit": "Elbit", "bob": "Bob", "oracle": "Oracle"}
+                "elbit": "Elbit", "bob": "Bob", "oracle": "Oracle",
+                "google": "Google", "devjobs": "DevJobs"}
 
 CSS = """
 .sources table { margin-bottom:1.6rem; }

@@ -306,14 +306,14 @@ def coverage_block(result: dict[str, list[str]] | None) -> str:
 BOARD_FILTERS = [("all", "הכל"), ("comeet", "Comeet"), ("greenhouse", "Greenhouse"), ("workday", "Workday"),
                  ("lever", "Lever"), ("ashby", "Ashby"), ("workable", "Workable"),
                  ("smartrecruiters", "SmartRecruiters"), ("amazon", "Amazon"),
-                 ("eightfold", "Eightfold"), ("elbit", "Elbit"), ("bob", "Bob"), ("oracle", "Oracle"),
-                 ("techmap", "מפת ההייטק"), ("other", "אחר")]
+                 ("eightfold", "Eightfold"), ("elbit", "Elbit"), ("bob", "Bob"), ("oracle", "Oracle"), ("google", "Google"),
+                 ("devjobs", "DevJobs"), ("techmap", "מפת ההייטק"), ("other", "אחר")]
 # Link fragments that name each system, read before the company list, which only knows where a company was found.
 BOARD_LINKS = [("comeet", "comeet.com/jobs"), ("greenhouse", "greenhouse.io"), ("greenhouse", "gh_jid="),
                ("workday", "myworkdayjobs.com"), ("lever", "lever.co"), ("ashby", "ashbyhq.com"),
                ("workable", "workable.com"), ("smartrecruiters", "smartrecruiters.com"),
                ("amazon", "amazon.jobs"), ("elbit", "elbitsystemscareer.com"), ("bob", "careers.hibob.com"),
-               ("oracle", "/hcmUI/CandidateExperience/"), ("techmap", "linkedin.com/jobs/view")]
+               ("oracle", "/hcmUI/CandidateExperience/"), ("google", "google.com/about/careers"), ("devjobs", "devjobs.co.il"), ("techmap", "linkedin.com/jobs/view")]
 
 
 def board_of(job: dict) -> str:
@@ -553,7 +553,7 @@ def groups_section(groups: list[dict]) -> str:
 def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive: dict[str, bool],
            docs: dict[str, str], applied: dict[str, dict] | None = None,
            dismissed: dict[str, dict] | None = None, apps: list[dict] | None = None,
-           closed: list[dict] | None = None) -> str:
+           closed: list[dict] | None = None, waiting: list[dict] | None = None) -> str:
     applied, dismissed = applied or {}, dismissed or {}
     # A job already sent or removed leaves the list, so the page keeps showing only what is still to do;
     # sent jobs are listed on the tracking page.
@@ -613,6 +613,20 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
         '<div class="wide-table"><table><thead><tr><th>ציון</th><th>חברה</th><th>תפקיד</th>'
         f'<th class="gap">פער עיקרי</th><th></th></tr></thead><tbody>{near_rows}</tbody></table></div></details>'
     ) if near else ""
+    # Jobs known only from the Tech Map's list are not scored until their full text is found.
+    waiting = waiting or []
+    waiting_rows = "".join(
+        f'<tr><td class="ltr">{esc(j["company"])}</td>'
+        f'<td class="ltr"><a href="{esc(j["url"])}" target="_blank" rel="noopener">{esc(j["title"])}</a></td>'
+        f'<td>{esc((j.get("location") or "").replace(", Israel", ""))}</td></tr>'
+        for j in sorted(waiting, key=lambda j: (j["company"].lower(), j["title"])))
+    waiting_section = (
+        f'<details class="near-box"><summary>ממתינות לתיאור: {len(waiting)} משרות בלי דרישות מלאות</summary>'
+        '<p class="meta">משרות שמפת ההייטק מציגה, מחברות שהאתר שלהן לא נקרא. הן לא מדורגות עד שהתיאור המלא שלהן נמצא, '
+        'כי ציון לפי כותרת בלבד הוא ניחוש.</p>'
+        '<div class="wide-table"><table><thead><tr><th>חברה</th><th>תפקיד</th><th>עיר</th></tr></thead>'
+        f'<tbody>{waiting_rows}</tbody></table></div></details>'
+    ) if waiting else ""
     below = len(rest) - len(near)
     below_note = f'<p class="meta">עוד {below} משרות קיבלו פחות מ־{NEAR_MISS} ולא מוצגות.</p>' if below else ""
 
@@ -658,6 +672,7 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
 
 {near_section}
 {below_note}
+{waiting_section}
 </div>
 
 <footer class="outside-focus">
@@ -718,12 +733,18 @@ def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bo
             for job in broken:
                 print(f"  {job['company']} - {job['title'][:40]}")
 
+    # Open jobs known only by title, within the rules and not yet sent or removed: listed, never scored.
+    settled = store.settled_ids(connection)
+    waiting = [dict(r) for r in connection.execute("SELECT * FROM jobs WHERE last_seen = ?", (latest,))]
+    waiting = [j for j in waiting if scout.is_map_job(j) and j["id"] not in settled
+               and filter_jobs.rejection_reason(j, filter_jobs.MAX_YEARS_REQUIRED) is None]
+
     folder = pathlib.Path("applications")
     docs = {j["id"]: d for j in shortlist if (d := document_for(j, folder))} if folder.is_dir() else {}
 
     path = pathlib.Path(out)
     path.write_text(render(jobs, new_ids, counts, rubric, alive, docs, store.applied_jobs(connection),
-                           store.dismissed_jobs(connection), store.applications(connection), closed_jobs),
+                           store.dismissed_jobs(connection), store.applications(connection), closed_jobs, waiting),
                     encoding="utf-8")
     if docs:
         print(f"{len(docs)} of {len(shortlist)} shortlisted jobs have a tailored document linked")

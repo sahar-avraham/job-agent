@@ -37,7 +37,7 @@ PUBLIC = [
     "submit.py", "tailor.py", "tracking.py", "use_venv.py", "browser.js", "tracking.js", "forms.py",
     "extension/manifest.json", "extension/background.js", "extension/content.js", "extension/page.js",
     "extension/fillers.js", "extension/THIRD_PARTY.md", "extension/README.md", "extension/workday.js", "extension/lever.js", "extension/smartrecruiters.js",
-    "workday.py", "sources.py", "techmap.py", "smartrecruiters.py", "employers.py", "scout.py",
+    "workday.py", "sources.py", "techmap.py", "smartrecruiters.py", "employers.py", "scout.py", "devjobs.py",
 ]
 
 # Short values would match everywhere, so only lines and values at least this long are searched for.

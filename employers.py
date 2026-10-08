@@ -227,3 +227,43 @@ def fetch_oracle(company: str, token: str, descriptions: bool = False) -> list[f
         with ThreadPoolExecutor(max_workers=4) as pool:
             jobs = list(pool.map(describe, jobs))
     return jobs
+
+
+GOOGLE_SEARCH = "https://www.google.com/about/careers/applications/jobs/results?location={place}&page={page}"
+GOOGLE_JOB = "https://www.google.com/about/careers/applications/jobs/results/{id}"
+# The results page carries its jobs as data for its own script: [jobs, _, total, page size].
+GOOGLE_DATA = re.compile(r"AF_initDataCallback\(\{key: 'ds:1', hash: '\d+', data:(.*?), sideChannel: \{\}\}\);</script>", re.S)
+
+
+def google_text(field) -> str:
+    """A text field of a Google job, stored as [_, html]."""
+    if isinstance(field, list):
+        field = next((part for part in reversed(field) if isinstance(part, str)), "")
+    return fetch_jobs.strip_html(field or "")
+
+
+def fetch_google(company: str, token: str, descriptions: bool = False) -> list[fetch_jobs.Job]:
+    """Read Google's jobs in one country from its own careers search, twenty a page, each with its full text.
+
+    A job is a list read by position: 0 id, 1 title, 3 responsibilities, 4 qualifications, 9 places,
+    10 about the job, 12 the time it was created.
+    """
+    session, posts, page = opener(), [], 1
+    while page <= 50:
+        request = urllib.request.Request(GOOGLE_SEARCH.format(place=urllib.parse.quote(token), page=page),
+                                         headers={"User-Agent": AGENT, "Accept": "text/html"})
+        with session.open(request, timeout=30) as response:
+            found = GOOGLE_DATA.search(response.read().decode("utf-8", "replace"))
+        data = json.loads(found.group(1)) if found else [[], None, 0, 20]
+        posts += data[0] or []
+        if not data[0] or len(posts) >= (data[2] or 0):
+            break
+        page += 1
+    return [fetch_jobs.Job(
+        company=company,
+        title=post[1],
+        location="; ".join(place[0] for place in post[9] or [] if place),
+        posted=datetime.fromtimestamp(post[12][0], tz=timezone.utc).strftime("%Y-%m-%d") if post[12] else "",
+        url=GOOGLE_JOB.format(id=post[0]),
+        description=" ".join(google_text(post[k]) for k in (10, 3, 4)) if descriptions else "",
+    ) for post in posts]

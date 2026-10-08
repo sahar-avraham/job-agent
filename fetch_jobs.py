@@ -293,6 +293,18 @@ def fetch_oracle(company: str, token: str, descriptions: bool = False) -> list[J
     return employers.fetch_oracle(company, token, descriptions)
 
 
+def fetch_google(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read Google's jobs in one country. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_google(company, token, descriptions)
+
+
+def fetch_devjobs(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read a company's page on DevJobs, for one whose own site cannot be read. The adapter is devjobs.py."""
+    import devjobs
+    return devjobs.fetch(company, token, descriptions)
+
+
 def fetch_techmap(company: str, token: str, descriptions: bool = False) -> list[Job]:
     """Read the Tech Map's jobs at companies no other board reads. The adapter lives in scout.py."""
     import scout
@@ -303,7 +315,7 @@ FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "ashby": fetch
             "workday": fetch_workday, "workable": fetch_workable, "smartrecruiters": fetch_smartrecruiters,
             "amazon": fetch_amazon, "eightfold": fetch_eightfold,
             "elbit": fetch_elbit, "bob": fetch_bob, "oracle": fetch_oracle,
-            "techmap": fetch_techmap}
+            "google": fetch_google, "devjobs": fetch_devjobs, "techmap": fetch_techmap}
 
 
 def fetch_company(entry: tuple[str, str, str], descriptions: bool = False) -> tuple[str, list[Job], str]:
