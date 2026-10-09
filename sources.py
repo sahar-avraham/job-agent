@@ -65,13 +65,35 @@ def scout_block(rows: list[dict]) -> str:
         for r in rows)
     return ('<h2>גילוי חברות שמגייסות בתחום שלך</h2>'
             '<p class="meta">חברות שמפת ההייטק מציגה אצלן משרות בתחום שלך, ושאף לוח לא קרא לפני שהתגלו. '
-            f'{added} נוספו אוטומטית לסריקה. את המשרות של השאר קוראים מהמפה עצמה, בלי תיאור.</p>'
+            f'{added} נקראות ממקור ישיר. את המשרות של השאר קוראים מהמפה, ואת התיאור שלהן משלימים לפי מספר המשרה.</p>'
             '<div class="wide-table"><table><thead><tr><th>חברה</th><th>משרות במפה</th><th>מצב</th><th></th>'
             f'</tr></thead><tbody>{lines}</tbody></table></div>')
 
 
+def texts_block(texts: dict) -> str:
+    """Where the Tech Map's jobs got their full text, how many still wait, and whether LinkedIn is being read."""
+    if not texts:
+        return ""
+    rest = texts.get("rest_until") or ""
+    if rest and rest > store.now():
+        why = esc((texts.get("stopped") or "").split(" ", 1)[-1])
+        state = f'מושהה עד {day(rest)}, אחרי שהופסק: <span class="ltr">{why}</span>'
+    else:
+        last = (texts.get("last_read") or "").split(" ")
+        state = f"תקין. בהרצה האחרונה נקראו {last[1]} דפים." if len(last) == 2 else "עוד לא נקרא."
+    return ('<h2>תיאורים למשרות מהמפה</h2>'
+            '<p class="meta">משרה מהמפה מדורגת רק אחרי שנמצא לה תיאור מלא: קודם באתר DevJobs לפי מספר המשרה, '
+            'ואם אין שם, בדף המשרה בלינקדאין.</p>'
+            '<table><tbody>'
+            f'<tr><td>תיאור מ־DevJobs</td><td class="num">{texts["devjobs"]}</td></tr>'
+            f'<tr><td>תיאור מלינקדאין</td><td class="num">{texts["linkedin"]}</td></tr>'
+            f'<tr><td>ממתינות לתיאור</td><td class="num">{texts["waiting"]}</td></tr>'
+            f'<tr><td>קריאה מלינקדאין</td><td>{state}</td></tr>'
+            '</tbody></table>')
+
+
 def render(runs: list[dict], failures: list[dict], open_by_company: dict[str, int],
-           workable_companies: set[str] = frozenset(), scout_rows: list[dict] = ()) -> str:
+           workable_companies: set[str] = frozenset(), scout_rows: list[dict] = (), texts: dict | None = None) -> str:
     last = runs[0] if runs else None
     per_board = collections.Counter(board for _, board, _ in fetch_jobs.COMPANIES)
     # A company counts as hiring here when the latest collection found at least one of its jobs in Israel.
@@ -122,6 +144,8 @@ def render(runs: list[dict], failures: list[dict], open_by_company: dict[str, in
 
 {scout_block(list(scout_rows))}
 
+{texts_block(texts or {})}
+
 <h2>חברות לפי מערכת</h2>
 <p class="meta">כמה חברות נבדקות בכל הרצה, וכמה מהן היו עם משרה פתוחה בישראל באיסוף האחרון.</p>
 <table><thead><tr><th>מערכת</th><th>חברות</th><th>עם משרות בישראל</th></tr></thead>
@@ -131,6 +155,23 @@ def render(runs: list[dict], failures: list[dict], open_by_company: dict[str, in
 <div class="wide-table"><table><thead><tr><th>מתי</th><th>נאספו</th><th>חדשות</th><th>עברו סינון</th><th>דורגו</th></tr></thead>
 <tbody>{run_rows}</tbody></table></div>
 </div></body></html>"""
+
+
+def map_texts(connection, latest: str) -> dict:
+    """Counts for the open jobs from the Tech Map: texts found per source, and the ones still waiting."""
+    import filter_jobs
+    import scout
+    counts = dict(connection.execute(
+        "SELECT t.source, COUNT(*) FROM map_texts t JOIN jobs j ON j.url = t.url"
+        " WHERE j.last_seen = ? AND t.result = 'text' GROUP BY t.source", (latest,)).fetchall())
+    settled = store.settled_ids(connection)
+    waiting = sum(1 for row in connection.execute("SELECT * FROM jobs WHERE last_seen = ?", (latest,))
+                  if scout.is_map_job(dict(row)) and row["id"] not in settled
+                  and filter_jobs.rejection_reason(dict(row), filter_jobs.MAX_YEARS_REQUIRED) is None)
+    return {"devjobs": counts.get("devjobs", 0), "linkedin": counts.get("linkedin", 0), "waiting": waiting,
+            "rest_until": store.get_meta(connection, "linkedin_rest_until"),
+            "stopped": store.get_meta(connection, "linkedin_stopped"),
+            "last_read": store.get_meta(connection, "linkedin_last_read")}
 
 
 def page(db: str) -> str:
@@ -145,6 +186,7 @@ def page(db: str) -> str:
             "SELECT DISTINCT company FROM jobs WHERE last_seen = ? AND url LIKE '%jobs.workable.com%'", (latest,))}
         scout_rows = [dict(r) for r in connection.execute(
             "SELECT * FROM scout WHERE jobs > 0 ORDER BY status = 'added' DESC, jobs DESC, company")]
-        return render(runs, store.board_failures(connection), open_by_company, workable, scout_rows)
+        return render(runs, store.board_failures(connection), open_by_company, workable, scout_rows,
+                      map_texts(connection, latest))
     finally:
         connection.close()

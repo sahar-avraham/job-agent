@@ -21,8 +21,11 @@ whatever is new (up to 25 a run), tailors a draft CV and letter for up to 10 job
 have none, and writes the report. Postings older than six months are dropped, and ones older
 than three months carry a badge. A company already applied to gets no new draft, and neither
 does a job known only from the Tech Map. Approving a draft into Word and PDF files stays a
-click on the page. `--no-tailor` skips the drafts, `--no-scout` the company check, and
-`--limit 100` scores more in one run.
+click on the page. `--no-tailor` skips the drafts, `--no-scout` the company check, `--no-linkedin` the
+LinkedIn job pages, and `--limit 100` scores more in one run.
+
+**It also runs by itself** every day at 12:45 (Windows Task Scheduler, task "job-agent daily run",
+which starts `daily_run.cmd`; output in `logs/daily_run.log`). Avoid starting another run at 12:45.
 
 ```
 python run.py
@@ -174,6 +177,12 @@ itself; this checks every company again and prints the table the sources page sh
 
 ```
 python scout.py --again
+```
+
+**Check the readers of other sites still match their pages.**
+
+```
+python -m unittest discover tests
 ```
 
 **After editing `profile.md`.** Nothing to run on purpose. The next `run.py`

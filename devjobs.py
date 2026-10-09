@@ -69,8 +69,12 @@ def full_text(url: str) -> tuple[str, str]:
 @functools.lru_cache(maxsize=64)
 def cards(slug: str) -> tuple[tuple[str, str, str, str], ...]:
     """A company page's jobs as (number, title, place, date), each once, read once per run."""
+    return parse_cards(read(COMPANY.format(slug=slug)))
+
+
+def parse_cards(page: str) -> tuple[tuple[str, str, str, str], ...]:
     found: dict[str, tuple[str, str, str, str]] = {}
-    for number, title, place, when in CARD.findall(read(COMPANY.format(slug=slug))):
+    for number, title, place, when in CARD.findall(page):
         found.setdefault(number, (number, " ".join(html.unescape(title).split()), " ".join(html.unescape(place).split()),
                                   day(when)))
     return tuple(found.values())

@@ -28,3 +28,4 @@ catalogue/
 .public-copy
 companies.json
 commute.json
+logs/

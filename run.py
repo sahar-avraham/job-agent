@@ -28,9 +28,11 @@ import techmap
 from score_job import MODEL_CLI, score_via_cli
 
 
-def collect(region: str, descriptions: bool = True) -> tuple[list[dict], list[tuple], list[tuple]]:
+def collect(region: str, descriptions: bool = True, connection=None,
+            read_linkedin: bool = True) -> tuple[list[dict], list[tuple], list[tuple]]:
     """Fetch every configured board and return the jobs in the wanted region, the boards that
-    failed with their error, and the boards that read."""
+    failed with their error, and the boards that read. With a database, the Tech Map's jobs then get
+    their full text, once every board is read and can tell which of them are duplicates."""
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda entry: fetch_jobs.fetch_company(entry, descriptions), fetch_jobs.COMPANIES))
 
@@ -53,6 +55,8 @@ def collect(region: str, descriptions: bool = True) -> tuple[list[dict], list[tu
         if key not in seen:
             seen.add(key)
             unique.append(asdict(job))
+    if connection is not None and descriptions:
+        unique = scout.complete(unique, connection, read_linkedin)
     return unique, failed, read
 
 
@@ -92,6 +96,7 @@ def main() -> int:
     parser.add_argument("--tailor-limit", type=int, default=10, help="most new drafts to tailor in one run")
     parser.add_argument("--no-tailor", action="store_true", help="skip tailoring drafts for jobs above 50")
     parser.add_argument("--no-scout", action="store_true", help="skip looking for hiring companies no board reads")
+    parser.add_argument("--no-linkedin", action="store_true", help="look for the Tech Map's job texts on DevJobs only")
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -119,7 +124,7 @@ def main() -> int:
         except Exception as error:
             print(f"scout skipped: {error}", file=sys.stderr)
 
-    jobs, failed, read = collect(args.region)
+    jobs, failed, read = collect(args.region, connection=connection, read_linkedin=not args.no_linkedin)
     store.record_board_health(connection, failed, read)
     fresh = store.upsert_jobs(connection, jobs)
     print(f"collected {len(jobs)} positions in {args.region}, {len(fresh)} of them new")

@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 import comeet
 import devjobs
 import fetch_jobs
+import linkedin
 import mail_sync
 import store
 import techmap
@@ -222,6 +223,13 @@ def check(connection, again: bool = False, workers: int = 6) -> list[dict]:
             " ON CONFLICT (company) DO UPDATE SET careers = excluded.careers, system = excluded.system,"
             " token = excluded.token, status = excluded.status, note = excluded.note, checked_at = excluded.checked_at",
             (r["company"], r["careers"], r["system"], r["token"], r["status"], r["note"], stamp))
+    # A company read by a board added another way, by hand or as a DevJobs page, shows as added with that board.
+    boards = [(name, board, token) for name, board, token in fetch_jobs.COMPANIES if board not in ("techmap", "workable")]
+    for row in connection.execute("SELECT company FROM scout WHERE status != 'added'").fetchall():
+        match = next((b for b in boards if mail_sync.same_company(row[0], b[0])), None)
+        if match:
+            connection.execute("UPDATE scout SET status = 'added', system = ?, token = ?, note = '' WHERE company = ?",
+                               (match[1], match[2], row[0]))
     # The count of jobs is the map's today, for every company it lists, checked now or before, added ones too.
     everywhere = Counter(row["company"] for row in rows)
     connection.execute("UPDATE scout SET jobs = 0")
@@ -235,26 +243,13 @@ def is_map_job(job: dict) -> bool:
     return (job.get("description") or "").startswith(MAP_NOTE)
 
 
-def known_texts() -> dict[str, tuple[str, str]]:
-    """Full texts already found for map jobs, by link, so each posting is looked up once."""
-    try:
-        connection = store.connect()
-        rows = connection.execute("SELECT url, description, posted FROM jobs WHERE url LIKE '%linkedin.com/jobs/view%'"
-                                  " AND description != '' AND description NOT LIKE ?", (MAP_NOTE + "%",)).fetchall()
-        connection.close()
-        return {url: (text, posted or "") for url, text, posted in rows}
-    except Exception:
-        return {}
-
-
 def fetch(company: str, token: str, descriptions: bool = False) -> list[fetch_jobs.Job]:
     """The map's jobs at companies that no other board reads, taken from the map's own rows.
 
-    A job that a company's DevJobs page already lists is left to that board. Each other one whose title
-    passes the hard rules is looked up on DevJobs by its LinkedIn job number;
-    found there, it carries the posting's full text and date like a job from any board. A job not found
-    keeps a text that says only the title is known, and is never scored (run.py), since a score from a
-    title alone is a guess. The map's own date is the day of its list, so it is not taken as the posting's.
+    A job that a company's DevJobs page already lists is left to that board. The rest come with a text
+    that says only the title is known; `complete` looks for their full text once every board is read,
+    and a job left without it is never scored (run.py), since a score from a title alone is a guess.
+    The map's own date is the day of its list, so it is not taken as the posting's.
     """
     rows = map_jobs()
     missing = untracked(rows)
@@ -269,8 +264,7 @@ def fetch(company: str, token: str, descriptions: bool = False) -> list[fetch_jo
     for row in rows:
         if row["company"] not in missing:
             continue
-        number = devjobs.LINKEDIN_NUMBER.search(row.get("url") or "")
-        if number and number.group(1) in covered.get(row["company"], set()):
+        if linkedin.number_of(row.get("url")) in covered.get(row["company"], set()):
             continue
         link = urllib.parse.urlsplit(row.get("url") or "")
         query = urllib.parse.urlencode([(k, v) for k, v in urllib.parse.parse_qsl(link.query) if not k.startswith("utm_")])
@@ -283,21 +277,122 @@ def fetch(company: str, token: str, descriptions: bool = False) -> list[fetch_jo
             description=(f"{MAP_NOTE}, with no posting text: level {row.get('level') or 'unknown'},"
                          f" field {row['field']}, company size {row.get('size') or 'unknown'}.") if descriptions else "",
         ))
-    if descriptions:
-        known = known_texts()
-
-        def complete(job: fetch_jobs.Job) -> fetch_jobs.Job:
-            if job.url in known:
-                job.description, job.posted = known[job.url]
-            elif workday.worth_reading(job.title):
-                text, posted = devjobs.full_text(job.url)
-                if text:
-                    job.description, job.posted = text, posted
-            return job
-
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            jobs = list(pool.map(complete, jobs))
     return jobs
+
+
+# LinkedIn's job pages are read one at a time, a random 4 to 12 seconds apart (a base of 8 seconds,
+# half to one and a half times it, as common crawlers spread their requests), at most 60 a run; a
+# refusal stops them for a day, and so do three pages in a row whose text cannot be found.
+LINKEDIN_PAUSE = (4.0, 12.0)
+LINKEDIN_AT_MOST = 60
+LINKEDIN_REST_HOURS = 24
+UNPARSED_IN_A_ROW = 3
+
+
+def same_job(job: dict, other: dict) -> bool:
+    return (mail_sync.same_company(job["company"], other["company"])
+            and mail_sync.title_similarity(job["title"], other["title"]) >= 0.8)
+
+
+def duplicates(map_rows: list[dict], direct: list[dict]) -> set[str]:
+    """Links of map jobs that a board already gave: the same company by its words and a near-identical title."""
+    by_company: dict[str, list[dict]] = {}
+    for job in direct:
+        by_company.setdefault(job["company"], []).append(job)
+    twins: dict[str, list[str]] = {}
+    found = set()
+    for job in map_rows:
+        if job["company"] not in twins:
+            twins[job["company"]] = [name for name in by_company if mail_sync.same_company(job["company"], name)]
+        if any(same_job(job, other) for name in twins[job["company"]] for other in by_company[name]):
+            found.add(job["url"])
+    return found
+
+
+def rest(connection, why: str) -> None:
+    """Stop reading LinkedIn for a day, and say why on the sources page."""
+    until = (datetime.now(timezone.utc) + timedelta(hours=LINKEDIN_REST_HOURS)).isoformat(timespec="seconds")
+    store.set_meta(connection, "linkedin_rest_until", until)
+    store.set_meta(connection, "linkedin_stopped", f"{store.now()} {why}")
+
+
+def complete(jobs: list[dict], connection, read_linkedin: bool = True) -> list[dict]:
+    """Give the map's jobs their full text once every board is read, and return the jobs to keep.
+
+    A map job that a board already gave is dropped as a duplicate. For the rest whose title passes the
+    hard rules and that are not sent or removed: the text found in an earlier run, else DevJobs by the
+    LinkedIn number, else LinkedIn's own job page. A job LinkedIn shows as closed or gone is dropped.
+    Every lookup is kept in map_texts, so no page is asked for twice.
+    """
+    import random
+    import time
+
+    map_rows = [j for j in jobs if is_map_job(j)]
+    if not map_rows:
+        return jobs
+    direct = [j for j in jobs if not is_map_job(j) and "linkedin.com/jobs/view" not in (j.get("url") or "")]
+    drop = duplicates(map_rows, direct)
+    settled = store.settled_ids(connection)
+    known = {row["url"]: dict(row) for row in connection.execute("SELECT * FROM map_texts")}
+    stored = {row["url"]: (row["description"], row["posted"] or "") for row in connection.execute(
+        "SELECT url, description, posted FROM jobs WHERE url LIKE '%linkedin.com/jobs/view%' AND description NOT LIKE ?",
+        (MAP_NOTE + "%",))}
+    gone = {url for url, row in known.items() if row["result"] in ("closed", "gone")}
+
+    def note(url: str, source: str, result: str) -> None:
+        connection.execute("INSERT OR REPLACE INTO map_texts (url, source, result, at) VALUES (?, ?, ?, ?)",
+                           (url, source, result, store.now()))
+
+    wanted = [j for j in map_rows if j["url"] not in drop and j["url"] not in gone
+              and store.job_id(j["url"]) not in settled and workday.worth_reading(j["title"])]
+    for job in wanted:
+        if job["url"] in stored:
+            job["description"], job["posted"] = stored[job["url"]]
+
+    # DevJobs first, a few at a time, since it is an open board.
+    def from_devjobs(job: dict) -> tuple[dict, bool]:
+        if not is_map_job(job):
+            return job, False
+        text, posted = devjobs.full_text(job["url"])
+        if text:
+            job["description"], job["posted"] = text, posted
+        return job, bool(text)
+
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        for job, found in pool.map(from_devjobs, wanted):
+            if found:
+                note(job["url"], "devjobs", "text")
+
+    if read_linkedin and store.now() >= (store.get_meta(connection, "linkedin_rest_until") or ""):
+        asked, unparsed = 0, 0
+        for job in wanted:
+            # A page read before and found unreadable is not asked again; the job keeps waiting.
+            if not is_map_job(job) or job["url"] in known or asked >= LINKEDIN_AT_MOST:
+                continue
+            if asked:
+                time.sleep(random.uniform(*LINKEDIN_PAUSE))
+            asked += 1
+            try:
+                found = linkedin.read(linkedin.number_of(job["url"]))
+            except linkedin.Refused as refusal:
+                rest(connection, str(refusal))
+                break
+            except Exception:
+                continue
+            note(job["url"], "linkedin", found["result"])
+            if found["result"] == "text":
+                job["description"], job["posted"] = found["text"], found["posted"]
+                unparsed = 0
+            elif found["result"] in ("closed", "gone"):
+                gone.add(job["url"])
+            else:
+                unparsed += 1
+                if unparsed >= UNPARSED_IN_A_ROW:
+                    rest(connection, f"page changed: no text on {UNPARSED_IN_A_ROW} pages in a row")
+                    break
+        store.set_meta(connection, "linkedin_last_read", f"{store.now()} {asked}")
+    connection.commit()
+    return [j for j in jobs if j["url"] not in drop and j["url"] not in gone]
 
 
 def main() -> int:

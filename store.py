@@ -148,6 +148,13 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- Boards that failed to read in the latest collection, kept until one reads again, so a company
 -- that moved to another system shows up on the page instead of vanishing quietly.
+CREATE TABLE IF NOT EXISTS map_texts (
+    url    TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    result TEXT NOT NULL,
+    at     TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS scout (
     company    TEXT PRIMARY KEY,
     jobs       INTEGER NOT NULL DEFAULT 0,

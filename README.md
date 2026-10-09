@@ -33,7 +33,7 @@ company discovery ──> public ATS feeds ──> collect ──> hard rules �
 | Collect | `fetch_jobs.py` | Adapters for the ATS feeds, normalized into one job shape with its posting date |
 | More boards | `workday.py`, `smartrecruiters.py`, `employers.py` | Workday sites, SmartRecruiters companies, and large employers on systems of their own (Amazon, Google, Eightfold, Oracle Recruiting Cloud, Bob, Elbit) |
 | Find companies | `catalogue.py`, `comeet.py`, `techmap.py` | Sweep public board catalogues, the Common Crawl index and the Israeli Tech Map for companies hiring locally |
-| Discover | `scout.py` | Every run: companies the Tech Map lists as hiring in the wanted fields that no board reads; their careers page is checked for a known system, else their jobs are taken from the map's own rows |
+| Discover | `scout.py`, `devjobs.py`, `linkedin.py` | Every run: companies the Tech Map lists as hiring in the wanted fields that no board reads; their careers page is checked for a known system, else their jobs are taken from the map's own rows, with each job's full text looked up by its number |
 | Hard rules | `filter_jobs.py` | Title, seniority, discipline, degree, years, posting age and commute rules, no model |
 | Score | `score_job.py` | One model call per job, validated against a pydantic schema |
 | Store | `store.py` | SQLite; scores keyed by job and a fingerprint of the profile |
@@ -53,9 +53,11 @@ company discovery ──> public ATS feeds ──> collect ──> hard rules �
 - **Find companies by who is hiring, not by who is famous.** The Tech Map's daily job
   lists say which companies hire in the wanted fields. One that no board reads has its
   careers page searched for a known hiring system and is added when it has jobs here;
-  one that cannot be read keeps its jobs from the map's rows, whose full text is looked up
-  on devjobs.co.il by the posting's number. A job whose text is not found is listed but
-  never scored, since a score from a title alone is a guess.
+  one that cannot be read keeps its jobs from the map's rows. Once every board is read, a map job
+  that a board already gave is dropped as a duplicate, and the rest get their full text by the
+  posting's LinkedIn number: from devjobs.co.il, else from LinkedIn's public job page, read one at
+  a time, a few seconds apart, and not at all for a day after any refusal. A job whose text is not
+  found is listed but never scored, since a score from a title alone is a guess.
 - **The model chooses, it does not write.** A tailored CV is a selection of fact ids
   from `facts.md`, printed in a fixed layout. The cover letter is fixed lines the
   candidate wrote, kept in `facts.md`. The model only names the company's field when it is
@@ -143,5 +145,7 @@ jobs come from the Tech Map's rows when it lists them.
   Lever and SmartRecruiters are filled by the extension and sent by the candidate; other
   systems are filled by hand.
 - Jobs known only from the Tech Map wait unscored until their full text is found.
-- There is no automated test suite yet. The evaluation sets measure the scoring, not
-  the code.
+- Tests cover only the readers of other sites (`python -m unittest discover tests`), on short pages
+  written to their shape. The evaluation sets measure the scoring.
+- LinkedIn's public job page gives a job's text but not where to apply outside LinkedIn, which it
+  shows only to members who sign in; that link is not read.

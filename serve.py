@@ -543,6 +543,20 @@ def main() -> int:
     except OSError:
         print(f"port {options.port} is already in use, probably by serve.py running in another window")
         return 1
+    # The page asks each company's board whether its listed jobs closed, once an hour, which took the
+    # first load of each hour about nine seconds. Asking in the background keeps every load quick.
+    def keep_closed_jobs_fresh():
+        import tempfile
+        import time
+        while True:
+            try:
+                report.write(options.db, options.profile, str(pathlib.Path(tempfile.gettempdir()) / "job-agent-warm.html"),
+                             options.threshold, False, False, live=True)
+            except Exception as error:
+                print(f"background check of closed jobs failed: {error}")
+            time.sleep(50 * 60)
+
+    threading.Thread(target=keep_closed_jobs_fresh, daemon=True).start()
     url = f"http://127.0.0.1:{options.port}/"
     print(f"serving {url}")
     print("loopback only, nothing on the network. Ctrl+C to stop.")
