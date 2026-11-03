@@ -1,6 +1,6 @@
 # What to run
 
-The short version. `README.md` has the long one.
+Every command and its options. `README.md` has the first setup and the daily routine.
 
 Everything runs from the project folder with plain `python`. The scripts that need
 extra packages switch to the project's `.venv` by themselves (`use_venv.py`), so
@@ -24,8 +24,8 @@ does a job known only from the Tech Map. Approving a draft into Word and PDF fil
 click on the page. `--no-tailor` skips the drafts, `--no-scout` the company check, `--no-linkedin` the
 LinkedIn job pages, and `--limit 100` scores more in one run.
 
-**It also runs by itself** every day at 12:45 (Windows Task Scheduler, task "job-agent daily run",
-which starts `daily_run.cmd`; output in `logs/daily_run.log`). Avoid starting another run at 12:45.
+**It also runs by itself** once a day, after the scheduling in the README's first setup (`daily_run.cmd`;
+output in `logs/daily_run.log`). Avoid starting another run at the hour you scheduled.
 
 ```
 python run.py
@@ -92,7 +92,7 @@ anything unclear waits on the tracking page for a yes or no.
 
 Setup, once: turn on 2-Step Verification for the Google account, create an app
 password at myaccount.google.com/apppasswords, and put two lines in `.env` in this
-folder. `.env` is ignored by git.
+folder.
 
 ```
 GMAIL_ADDRESS=you@gmail.com
@@ -114,7 +114,7 @@ The last one hangs inside a Claude Code session. Run it in a normal terminal.
 ## Once in a while
 
 **More companies.** Every few weeks. Takes about fifteen minutes, then adds what
-it found to `companies.json`, the private list every run reads.
+it found to `companies.json`, the list every run reads.
 
 ```
 python catalogue.py --refresh --sweep --save
@@ -182,7 +182,7 @@ python scout.py --again
 **Check the readers of other sites still match their pages.**
 
 ```
-python -m unittest discover tests
+.venv\Scripts\python -m unittest discover tests
 ```
 
 **After editing `profile.md`.** Nothing to run on purpose. The next `run.py`
@@ -199,7 +199,7 @@ python rate_shortlist.py --report
 
 Five minutes, one question per job, and the report says where you and the model
 disagree. The bigger version is `make_evalset.py`, `rate_jobs.py` and
-`calibrate.py`, described in the README.
+`calibrate.py`.
 
 ## When something breaks
 
@@ -209,4 +209,4 @@ disagree. The bigger version is `make_evalset.py`, `rate_jobs.py` and
   terminal and log in again.
 - **The buttons do nothing** means the page was opened as a file. Use `serve.py`.
 - **Port already in use** means an old `serve.py` is still running. Close that
-  terminal, or pass `--port 8778`.
+  terminal. Passing `--port 8778` also works, but the extension only talks to 8777.

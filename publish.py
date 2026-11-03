@@ -36,7 +36,8 @@ PUBLIC = [
     "render_docx.py", "report.py", "run.py", "score_job.py", "serve.py", "settings.py", "store.py",
     "submit.py", "tailor.py", "tracking.py", "use_venv.py", "browser.js", "tracking.js", "forms.py",
     "extension/manifest.json", "extension/background.js", "extension/content.js", "extension/page.js",
-    "extension/fillers.js", "extension/THIRD_PARTY.md", "extension/README.md", "extension/workday.js", "extension/lever.js", "extension/smartrecruiters.js",
+    "extension/fillers.js", "extension/THIRD_PARTY.md", "extension/README.md", "extension/workday.js", "extension/lever.js", "extension/smartrecruiters.js", "extension/jobpage.js", "extension/panel.js",
+    "extension/files.html", "extension/files.js",
     "workday.py", "sources.py", "techmap.py", "smartrecruiters.py", "employers.py", "scout.py", "devjobs.py", "linkedin.py", "tests/test_sources.py", "daily_run.cmd",
 ]
 
