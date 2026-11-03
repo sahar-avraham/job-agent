@@ -619,7 +619,7 @@ def drafts(connection, job_id: str, ready: pathlib.Path, model: str) -> dict:
         text, _ = claude_cli.ask(DRAFT_PROMPT.format(
             banned=", ".join(f'"{p}"' for p in banned),
             notes=draft_notes(load_answers()),
-            facts=tailor.facts_block({k: v for k, v in facts.items() if k[0] not in "LMW"}),
+            facts=tailor.facts_block({k: v for k, v in facts.items() if k[0] not in "LMW" and not k.startswith("KH")}),
             # The candidate's own words on what they look for, from the cover letter's lines.
             motivation=facts.get("L3", "").rstrip("."),
             company=job["company"], title=job["title"], description=(job.get("description") or "")[:8000],
@@ -742,3 +742,32 @@ def remember(connection, job: dict, values: list[dict]) -> int:
         kept += 1
     connection.commit()
     return kept
+
+
+def job_summary(connection, job_id: str, ready: pathlib.Path, drafts: pathlib.Path) -> dict:
+    """What a page needs to hand over one job's files: its name, and which of its files exist."""
+    row = connection.execute("SELECT id, company, title, url FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    if row is None:
+        raise FormError("המשרה לא נמצאה במאגר")
+    stem = store.job_stem(dict(row), connection)
+    return {"id": row["id"], "company": row["company"], "title": row["title"], "url": row["url"],
+            "resume": (ready / f"{stem}-cv.pdf").is_file(),
+            "cover_letter": (ready / f"{stem}-cover-letter.pdf").is_file(),
+            "draft": f"/{drafts.name}/{stem}.html" if (drafts / f"{stem}.html").is_file() else ""}
+
+
+def ready_jobs(connection, ready: pathlib.Path, drafts: pathlib.Path) -> list[dict]:
+    """Open jobs with approved files or a draft, not sent or removed: approved first, the newest first."""
+    settled = store.settled_ids(connection)
+    latest = connection.execute("SELECT MAX(last_seen) FROM jobs").fetchone()[0]
+    found = []
+    for row in connection.execute("SELECT id, company, title FROM jobs WHERE last_seen = ?", (latest,)):
+        if row["id"] in settled:
+            continue
+        stem = store.job_stem(dict(row), connection)
+        cv, draft = ready / f"{stem}-cv.pdf", drafts / f"{stem}.html"
+        if cv.is_file() or draft.is_file():
+            when = (cv if cv.is_file() else draft).stat().st_mtime
+            found.append((cv.is_file(), when, {"id": row["id"], "company": row["company"], "title": row["title"],
+                                                "approved": cv.is_file()}))
+    return [job for _, _, job in sorted(found, key=lambda item: (not item[0], -item[1]))[:25]]

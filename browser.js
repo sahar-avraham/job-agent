@@ -18,13 +18,24 @@
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-    }).then((r) => r.json().then((data) => ({ ok: r.ok, data })));
+    })
+      .then((r) => r.json().then((data) => ({ ok: r.ok, data })))
+      // A server that stopped or broke off still gives the button its answer, so nothing stays stuck.
+      .catch(() => ({ ok: false, data: { error: "השרת לא ענה. בדוק שהחלון של serve.py פתוח ונסה שוב." } }));
   }
 
   document.addEventListener("click", (e) => {
     if (e.target.classList.contains("restore")) {
       e.target.disabled = true;
       post("/api/restore", { job_id: e.target.dataset.id }).then(({ ok, data }) =>
+        ok ? location.reload() : (alert(data.error), (e.target.disabled = false))
+      );
+      return;
+    }
+    // The page is rebuilt after a move, since the job's card is drawn by the server.
+    if (e.target.classList.contains("promote-row")) {
+      e.target.disabled = true;
+      post("/api/promote", { job_id: e.target.dataset.id }).then(({ ok, data }) =>
         ok ? location.reload() : (alert(data.error), (e.target.disabled = false))
       );
       return;
@@ -193,19 +204,20 @@
       });
   }
 
-  function send(path) {
+  // Every way a press can end without starting anything says so, rather than leaving the page unchanged.
+  async function send(path) {
     const ids = picks();
-    if (!ids.length) return;
+    if (!ids.length) return alert("לא סומנה אף משרה. סמן את התיבה ליד המשרה ולחץ שוב.");
     setBusy(true);
     log.classList.add("on");
     log.textContent = "starting...";
-    fetch(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ids }),
-    }).then(() => {
-      if (!polling) polling = setInterval(poll, 1000);
-    });
+    const { ok, data } = await post(path, { ids });
+    if (!ok) {
+      setBusy(false);
+      log.textContent = data.error === "busy" ? "פעולה קודמת עדיין רצה. חכה שתסתיים ולחץ שוב." : data.error || "השרת לא התחיל את הפעולה.";
+      return;
+    }
+    if (!polling) polling = setInterval(poll, 1000);
   }
 
   // Check every selected job first, list what will go and what will not, and send only after one confirm.

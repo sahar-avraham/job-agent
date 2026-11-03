@@ -63,6 +63,11 @@ h1 { font-size:clamp(1.6rem,4vw,2.2rem); margin:0 0 .4rem; }
   font-size:.82rem; color:var(--faint); }
 .counts b { display:block; font-size:1.5rem; color:var(--ink);
   font-variant-numeric:tabular-nums; line-height:1.2; }
+.run-details { margin-top:1rem; font-size:.9rem; }
+.run-details summary { cursor:pointer; color:var(--accent); }
+.run-details h3 { font-size:1rem; margin:1rem 0 .4rem; }
+.run-details ul { margin:.3rem 0; padding-inline-start:1.2rem; }
+.run-details td { vertical-align:top; }
 
 h2 { font-size:1.2rem; margin:2.5rem 0 1rem; padding-bottom:.4rem;
   border-bottom:1px solid var(--rule); }
@@ -120,6 +125,9 @@ nav.pages a.here { background:var(--accent-soft); color:var(--accent); }
 .note { background:var(--accent-soft); border-radius:6px; padding:.7rem .9rem; margin-top:.8rem; }
 .note h4 { margin:0 0 .3rem; font-size:.72rem; letter-spacing:.1em; text-transform:uppercase; color:var(--accent); }
 .note p { margin:0; font-size:.9rem; line-height:1.6; }
+.note.refused { background:var(--warn-soft); }
+.note.refused h4 { color:var(--warn); }
+.note.refused ul { margin:.2rem 0 0; padding-inline-start:1.2rem; font-size:.85rem; }
 details.detail { margin-top:.8rem; }
 details.detail summary { cursor:pointer; font-size:.85rem; color:var(--soft); }
 details.detail .cols { border-top:0; padding-top:.3rem; }
@@ -160,6 +168,9 @@ td.gap { font-size:.8rem; color:var(--soft); }
 @media (max-width:640px) { .gap { display:none; } }
 button.dismiss-row { font:inherit; font-size:.8rem; cursor:pointer; border:0; background:transparent; color:var(--faint); }
 button.dismiss-row:hover { color:var(--warn); }
+button.promote-row { font:inherit; font-size:.8rem; cursor:pointer; border:0; background:transparent; color:var(--accent); }
+button.promote-row:hover { text-decoration:underline; }
+.badge.promoted { background:var(--accent-soft); color:var(--accent); }
 button.restore { font:inherit; font-size:.8rem; cursor:pointer; border:0; border-radius:5px;
   padding:.2rem .6rem; background:var(--accent-soft); color:var(--accent); }
 form label { display:flex; flex-direction:column; gap:.15rem; font-size:.75rem; color:var(--soft); }
@@ -205,10 +216,12 @@ def link_is_alive(url: str, timeout: float = 12.0) -> bool:
     returns nothing for it, which is how a dead link reached the report. Showing
     a link that goes nowhere costs more than the second it takes to check.
     """
+    # The Windows certificate store, as the collector uses, since Python's own rejects Workday's sites.
+    import workday
     for method in ("HEAD", "GET"):
         request = urllib.request.Request(url, method=method, headers={"User-Agent": "Mozilla/5.0 job-agent"})
         try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
+            with urllib.request.urlopen(request, timeout=timeout, context=workday.CONTEXT) as response:
                 return response.status < 400
         except urllib.error.HTTPError as error:
             if error.code in (403, 405):  # some sites refuse the probe but serve the page
@@ -306,25 +319,84 @@ def coverage_block(result: dict[str, list[str]] | None) -> str:
 BOARD_FILTERS = [("all", "הכל"), ("comeet", "Comeet"), ("greenhouse", "Greenhouse"), ("workday", "Workday"),
                  ("lever", "Lever"), ("ashby", "Ashby"), ("workable", "Workable"),
                  ("smartrecruiters", "SmartRecruiters"), ("amazon", "Amazon"),
-                 ("eightfold", "Eightfold"), ("elbit", "Elbit"), ("bob", "Bob"), ("oracle", "Oracle"), ("google", "Google"),
-                 ("devjobs", "DevJobs"), ("techmap", "מפת ההייטק"), ("other", "אחר")]
+                 ("eightfold", "Eightfold"), ("elbit", "Elbit"), ("bob", "Bob"), ("oracle", "Oracle"), ("google", "Google"), ("apple", "Apple"),
+                 ("devjobs", "DevJobs"), ("techmap", "מפת ההייטק"), ("linkedin", "חיפוש לינקדאין"), ("other", "אחר")]
 # Link fragments that name each system, read before the company list, which only knows where a company was found.
 BOARD_LINKS = [("comeet", "comeet.com/jobs"), ("greenhouse", "greenhouse.io"), ("greenhouse", "gh_jid="),
                ("workday", "myworkdayjobs.com"), ("lever", "lever.co"), ("ashby", "ashbyhq.com"),
                ("workable", "workable.com"), ("smartrecruiters", "smartrecruiters.com"),
                ("amazon", "amazon.jobs"), ("elbit", "elbitsystemscareer.com"), ("bob", "careers.hibob.com"),
-               ("oracle", "/hcmUI/CandidateExperience/"), ("google", "google.com/about/careers"), ("devjobs", "devjobs.co.il"), ("techmap", "linkedin.com/jobs/view")]
+               ("oracle", "/hcmUI/CandidateExperience/"), ("google", "google.com/about/careers"), ("apple", "jobs.apple.com"), ("devjobs", "devjobs.co.il"), ("techmap", "linkedin.com/jobs/view")]
 
 
 def board_of(job: dict) -> str:
     """The system a job's application goes through, from its link, else from the company list."""
     url = job.get("url") or ""
+    if job.get("source") == "linkedin":
+        return "linkedin"
     for board, fragment in BOARD_LINKS:
         if fragment in url:
             return board
     boards = {board for company, board, _ in fetch_jobs.COMPANIES if company == job["company"]}
     named = {key for key, _ in BOARD_FILTERS}
     return boards.pop() if len(boards) == 1 and boards <= named else "other"
+
+
+# The hard rules' reasons as the run details name them, keyed by run.short_reason's form.
+REASON_LABELS = {"company blocked": "חברה חסומה", "posted over six months ago": "פורסמה לפני יותר מחצי שנה",
+                 "non-engineering title": "תפקיד לא הנדסי", "too senior": "בכירות בכותרת",
+                 "not software": "תחום שאינו תוכנה", "role that scores low": "סוג תפקיד שמקבל ציון נמוך",
+                 "title outside target roles": "כותרת מחוץ לתפקידי היעד", "support role": "תפקיד תמיכה", "student or intern role": "משרת סטודנט או התמחות",
+                 "outside the commute area": "מחוץ לאזור הנסיעה",
+                 "requires a master's or doctorate": "דורשת תואר שני או דוקטורט",
+                 "requires a non-computing engineering degree": "דורשת תואר הנדסה שאינו מחשבים",
+                 "wants more years": "דורשת יותר שנות ניסיון"}
+
+
+def run_details(details: dict | None, scored: int, passed: int) -> str:
+    """Where the last run's jobs came from, and what became of its new ones, so every gap in the counts above has its reason."""
+    if not details:
+        return ""
+    sources = details["sources"]
+    boards, tmap, search = sources["boards"], sources["techmap"], sources["linkedin"]
+    left = search.get("left") or {}
+    stopped = search.get("stopped") or ""
+    search_note = (f'{search.get("asked", 0)} חיפושים החזירו {search.get("listed", 0)} משרות, '
+                   f'{search.get("first_listed", 0)} מהן בפעם הראשונה. '
+                   f'מתוך {search.get("offered", 0)} המשרות שהחיפוש מצא ב־30 הימים האחרונים, לא נכנסו: '
+                   f'{left.get("own board", 0)} בחברה שהלוח שלה נקרא ישירות, {left.get("in the map", 0)} שכבר במפה, '
+                   f'{left.get("duplicate", 0)} כפולות של משרה מלוח, {left.get("closed", 0)} שנסגרו. '
+                   f'נקראו {search.get("pages", 0)} דפי משרה בלינקדאין.')
+    if stopped:
+        search_note += f' החיפוש לא רץ במלואו: <span class="ltr">{esc(stopped)}</span>.'
+    rows = (
+        f'<tr><td>לוחות החברות</td><td class="num">{boards["jobs"]:,}</td><td class="num">{boards["new"]}</td>'
+        f'<td>נקראו {boards.get("read", 0)} לוחות, {boards.get("failed", 0)} נכשלו.</td></tr>'
+        f'<tr><td>מפת ההייטק</td><td class="num">{tmap["jobs"]}</td><td class="num">{tmap["new"]}</td>'
+        f'<td>{tmap.get("listed", 0)} משרות ברשימת המפה בחברות שאין להן לוח קריא. '
+        f'{tmap.get("duplicate", 0)} מהן כפולות של משרה מלוח, {tmap.get("closed", 0)} נסגרו.</td></tr>'
+        f'<tr><td>חיפוש לינקדאין</td><td class="num">{search["jobs"]}</td><td class="num">{search["new"]}</td>'
+        f'<td>{search_note}</td></tr>')
+
+    rejected = details.get("rejected") or {}
+    reasons = "".join(f"<li>{esc(REASON_LABELS.get(reason, reason))}: {count}</li>" for reason, count in rejected.items())
+    new, kept = details["new"], details["passed"]
+    funnel = (
+        f'<li><b>{new}</b> משרות חדשות.</li>'
+        f'<li><b>{new - kept}</b> נפסלו בסינון הגס:<ul>{reasons}</ul></li>'
+        f'<li><b>{kept}</b> עברו את הסינון הגס. מהן:<ul>'
+        f'<li>{details.get("scored_new", 0)} נבדקו במודל.</li>'
+        f'<li>{details.get("waiting", 0)} מחכות לתיאור מלא, ולא ייבדקו בלעדיו.</li>'
+        f'<li>{details.get("settled", 0)} כבר הוגשו או הוסרו, ולכן לא נבדקו.</li>'
+        f'<li>{details.get("over_limit", 0)} מעבר למגבלת הבדיקות להרצה, וייבדקו בהרצה הבאה.</li>'
+        f'<li>{details.get("failed_new", 0)} נכשלו בבדיקה, וייבדקו שוב בהרצה הבאה.</li></ul></li>'
+        f'<li>נבדקו במודל {scored}: {details.get("scored_new", 0)} חדשות, ועוד {details.get("scored_old", 0)} '
+        f'ותיקות שהתיאור שלהן הגיע רק עכשיו או שבדיקה קודמת שלהן נכשלה. {passed} מהן עברו את הסף.</li>')
+    return ('<details class="run-details"><summary>פירוט ההרצה</summary>'
+            '<h3>מאיפה הגיעו המשרות</h3>'
+            '<div class="wide-table"><table><thead><tr><th>מקור</th><th>פתוחות</th><th>חדשות</th><th>פירוט</th></tr></thead>'
+            f'<tbody>{rows}</tbody></table></div>'
+            f'<h3>מה קרה למשרות החדשות</h3><ul>{funnel}</ul></details>')
 
 
 def board_bar(jobs: list[dict]) -> str:
@@ -348,20 +420,38 @@ def age_badge(job: dict) -> str:
     return f'<span class="badge old">פורסמה לפני {age // 30} חודשים</span>'
 
 
+def refused_block(refused: dict | None) -> str:
+    """Why the last approval of this job wrote no files, so the reason outlives the page's reload."""
+    if not refused:
+        return ""
+    when = datetime.fromisoformat(refused["at"]).astimezone()
+    problems = refused["problems"]
+    audited = all(p.startswith(("unsupported:", "stretched:")) for p in problems)
+    items = "".join(f'<li class="{"ltr" if audited else ""}">{esc(p)}</li>' for p in problems)
+    why = ('<p>הבדיקה מצאה טענות שאין להן עובדה, גם אחרי כתיבה מחדש של הטיוטה. '
+           'אפשר להוסיף את העובדה החסרה ל־facts.md או להסיר את המשרה:</p>' if audited else "")
+    return (f'<div class="note refused"><h4>האישור לא הפיק קבצים, {when:%d/%m %H:%M}</h4>'
+            f'{why}<ul>{items}</ul></div>')
+
+
 def job_block(job: dict, is_new: bool, top: bool, alive: bool = True, document: str | None = None,
               same_company: bool = False, siblings: int = 0, note: str = "",
-              coverage: dict[str, list[str]] | None = None) -> str:
+              coverage: dict[str, list[str]] | None = None, refused: dict | None = None,
+              promoted: bool = False) -> str:
     years = filter_jobs.required_years(job.get("description") or "")
     demand = f"{years} שנות ניסיון" if years else "לא צוין ניסיון"
     badges = f'<span class="badge {esc(job["decision"])}">{esc(job["decision"])}</span>'
     if is_new:
         badges += '<span class="badge fresh">חדשה</span>'
+    if promoted:
+        badges += '<span class="badge promoted">הועלתה ידנית</span>'
     if not alive:
         badges += '<span class="badge dead">קישור שבור</span>'
     badges += age_badge(job)
-    # Known only from the Tech Map's list: the score rests on the title, and the link is the posting.
+    # Known only from a list of jobs: the score rests on the title, and the link is the posting.
     if scout.is_map_job(job):
-        badges += '<span class="badge map">מהמפה, בלי תיאור</span>'
+        badges += ('<span class="badge map">מחיפוש לינקדאין, בלי תיאור</span>' if job.get("source") == "linkedin"
+                   else '<span class="badge map">מהמפה, בלי תיאור</span>')
     if same_company:
         badges += '<span class="badge same-company">כבר הגשת לחברה הזו</span>'
     # Recruiters see every application to their company on one profile, so two at once needs a choice.
@@ -396,6 +486,7 @@ def job_block(job: dict, is_new: bool, top: bool, alive: bool = True, document: 
   </div>
   <ul>{reasons}</ul>
   {coverage_block(coverage)}
+  {refused_block(refused)}
   {f'<div class="note"><h4>מכתב הפנייה שנכתב למשרה</h4><p class="ltr">{esc(note)}</p></div>' if note else ''}
   <details class="detail"><summary>מתקיים ופערים</summary>
     <div class="cols">
@@ -417,7 +508,7 @@ OPEN_CACHE_SECONDS = 3600
 NEAR_MISS = 30
 
 
-def closed_since(jobs: list[dict]) -> set[str]:
+def closed_since(jobs: list[dict], ask: bool = True) -> set[str]:
     """Ids of listed jobs no longer on their company's board, read live once an hour per company.
 
     Jobs close between collections, and a closed one should not reach tailoring or a form. One
@@ -474,6 +565,8 @@ def closed_since(jobs: list[dict]) -> set[str]:
         return company, ({store.job_id(job.url) for job in listed}
                          if listed and not any(error for _, _, error in results) else None)
 
+    if not ask:
+        stale, workday_jobs = [], []
     with ThreadPoolExecutor(max_workers=8) as pool:
         for company, ids in pool.map(read, stale):
             OPEN_CACHE[company] = (time.time(), ids)
@@ -553,15 +646,18 @@ def groups_section(groups: list[dict]) -> str:
 def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive: dict[str, bool],
            docs: dict[str, str], applied: dict[str, dict] | None = None,
            dismissed: dict[str, dict] | None = None, apps: list[dict] | None = None,
-           closed: list[dict] | None = None, waiting: list[dict] | None = None) -> str:
-    applied, dismissed = applied or {}, dismissed or {}
+           closed: list[dict] | None = None, waiting: list[dict] | None = None,
+           refused: dict[str, dict] | None = None, promoted: set[str] | None = None) -> str:
+    applied, dismissed, refused, promoted = applied or {}, dismissed or {}, refused or {}, promoted or set()
     # A job already sent or removed leaves the list, so the page keeps showing only what is still to do;
     # sent jobs are listed on the tracking page.
     removed = [j for j in jobs if j["id"] in dismissed and j["id"] not in applied]
     jobs = [j for j in jobs if j["id"] not in applied and j["id"] not in dismissed]
     companies = {a["company"] for a in applied.values()}
-    shortlist = [j for j in jobs if j["score"] >= counts["threshold"]]
-    rest = [j for j in jobs if j["score"] < counts["threshold"]]
+    shortlist = [j for j in jobs if j["score"] >= counts["threshold"] or j["id"] in promoted]
+    rest = [j for j in jobs if j["score"] < counts["threshold"] and j["id"] not in promoted]
+    last_run = (f"ההרצה האחרונה {counts['ran_at']:%d/%m/%Y %H:%M}" if counts.get("ran_at")
+                else f"{datetime.now():%d/%m/%Y %H:%M}")
 
     # How many other jobs at the same company are on the list, so two are never sent by accident.
     per_company = collections.Counter(j["company"].lower() for j in shortlist)
@@ -572,7 +668,8 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
     blocks = "".join(
         job_block(j, j["id"] in new_ids, j["decision"] == "apply", alive.get(j["id"], True), docs.get(j["id"]),
                   any(mail_sync.same_company(j["company"], c) for c in companies), per_company[j["company"].lower()] - 1,
-                  cover_note_of(j, drafts) if drafts.is_dir() else "", covers.get(j["id"]))
+                  cover_note_of(j, drafts) if drafts.is_dir() else "", covers.get(j["id"]), refused.get(j["id"]),
+                  j["id"] in promoted)
         for j in shortlist
     )
 
@@ -603,28 +700,31 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
         f'<tr><td class="num">{j["score"]}</td><td class="ltr">{esc(j["company"])}</td>'
         f'<td class="ltr"><a href="{esc(j["url"])}" target="_blank" rel="noopener">{esc(j["title"])}</a> {age_badge(j)}</td>'
         f'<td class="ltr gap">{esc(j["gaps"][0]) if j["gaps"] else ""}</td>'
-        f'<td class="served-only"><button type="button" class="dismiss-row" data-id="{esc(j["id"])}">הסר</button></td></tr>'
+        f'<td class="served-only"><button type="button" class="promote-row" data-id="{esc(j["id"])}">העלה לרשימה</button> '
+        f'<button type="button" class="dismiss-row" data-id="{esc(j["id"])}">הסר</button></td></tr>'
         for j in near
     )
     near_section = (
         f'<details class="near-box"><summary>כמעט עברו: {len(near)} משרות עם ציון {NEAR_MISS} עד '
         f'{counts["threshold"] - 1}</summary>'
-        '<p class="meta">ליד כל אחת הפער העיקרי שהמודל מצא. משרה שהוסרה נשארת במאגר ולא תדורג שוב.</p>'
+        '<p class="meta">ליד כל אחת הפער העיקרי שהמודל מצא. משרה שהועלתה לרשימה מופיעה למעלה עם שאר המשרות, '
+        'ואפשר להכין לה קורות חיים, לאשר ולהגיש. משרה שהוסרה נשארת במאגר ולא תדורג שוב.</p>'
         '<div class="wide-table"><table><thead><tr><th>ציון</th><th>חברה</th><th>תפקיד</th>'
         f'<th class="gap">פער עיקרי</th><th></th></tr></thead><tbody>{near_rows}</tbody></table></div></details>'
     ) if near else ""
-    # Jobs known only from the Tech Map's list are not scored until their full text is found.
+    # Jobs known only from the Tech Map's list or LinkedIn's search are not scored until their full text is found.
     waiting = waiting or []
     waiting_rows = "".join(
         f'<tr><td class="ltr">{esc(j["company"])}</td>'
         f'<td class="ltr"><a href="{esc(j["url"])}" target="_blank" rel="noopener">{esc(j["title"])}</a></td>'
-        f'<td>{esc((j.get("location") or "").replace(", Israel", ""))}</td></tr>'
-        for j in sorted(waiting, key=lambda j: (j["company"].lower(), j["title"])))
+        f'<td>{esc((j.get("location") or "").replace(", Israel", ""))}</td>'
+        f'<td>{"חיפוש לינקדאין" if j.get("source") == "linkedin" else "מפת ההייטק"}</td></tr>'
+        for j in sorted(waiting, key=lambda j: (j.get("source") or "", j["company"].lower(), j["title"])))
     waiting_section = (
         f'<details class="near-box"><summary>ממתינות לתיאור: {len(waiting)} משרות בלי דרישות מלאות</summary>'
-        '<p class="meta">משרות שמפת ההייטק מציגה, מחברות שהאתר שלהן לא נקרא. הן לא מדורגות עד שהתיאור המלא שלהן נמצא, '
-        'כי ציון לפי כותרת בלבד הוא ניחוש.</p>'
-        '<div class="wide-table"><table><thead><tr><th>חברה</th><th>תפקיד</th><th>עיר</th></tr></thead>'
+        '<p class="meta">משרות ממפת ההייטק ומחיפוש לינקדאין, מחברות שהאתר שלהן לא נקרא. הן לא מדורגות עד שהתיאור '
+        'המלא שלהן נמצא, כי ציון לפי כותרת בלבד הוא ניחוש.</p>'
+        '<div class="wide-table"><table><thead><tr><th>חברה</th><th>תפקיד</th><th>עיר</th><th>מקור</th></tr></thead>'
         f'<tbody>{waiting_rows}</tbody></table></div></details>'
     ) if waiting else ""
     below = len(rest) - len(near)
@@ -638,13 +738,14 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
 <nav class="pages served-only"><a href="/" class="here">משרות</a><a href="/tracking">מעקב הגשות</a><a href="/sources">סריקת משרות</a></nav>
 <header>
   <h1>משרות שעברו סינון</h1>
-  <p class="meta">{datetime.now():%d/%m/%Y %H:%M} · רובריקה <span class="ltr">{esc(rubric)}</span></p>
+  <p class="meta">{last_run} · נאספו {counts['collected']:,} משרות · רובריקה <span class="ltr">{esc(rubric)}</span></p>
   <div class="counts">
-    <span>נאספו<b>{counts['collected']}</b></span>
     <span>חדשות<b>{counts['new']}</b></span>
-    <span>עברו סינון<b>{counts['kept']}</b></span>
-    <span>מעל הסף<b>{len(shortlist)}</b></span>
+    <span>עברו סינון גס<b>{counts['new_kept']}</b></span>
+    <span>נבדקו במודל<b>{counts['scored']}</b></span>
+    <span>עברו את המודל<b>{counts['passed']}</b></span>
   </div>
+  {run_details(counts.get('details'), counts['scored'], counts['passed'])}
 </header>
 
 <div class="bar-actions" id="actions">
@@ -683,8 +784,12 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
 
 
 def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bool = False, check: bool = True,
-          live: bool = False) -> int:
-    """Build the page from the database. Called directly by run.py and by main below."""
+          live: bool = False, ask: bool = True) -> int:
+    """Build the page from the database. Called directly by run.py and by main below.
+
+    With live, closed jobs are left out; with ask False they come only from the last check, so the page
+    never waits on the boards and the server's background check does the asking.
+    """
     profile = pathlib.Path(profile_path)
     if not profile.exists():
         print(f"missing {profile}", file=sys.stderr)
@@ -716,14 +821,26 @@ def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bo
         "new": run["new_jobs"] if run else 0,
         "kept": run["kept"] if run else len(jobs),
         "threshold": threshold,
+        "ran_at": datetime.fromisoformat(run["finished_at"]).astimezone() if run else None,
+        "scored": run["scored"] if run else 0,
+        "details": json.loads(run["details"]) if run and run["details"] else None,
     }
+    # The last run's funnel is counted from what it left behind, so a run from before these counts were shown has them too.
+    new_rows = [dict(r) for r in connection.execute("SELECT * FROM jobs WHERE first_seen = ?", (latest,))]
+    counts["new_kept"] = (counts["details"]["passed"] if counts["details"] else
+                          sum(1 for j in new_rows if filter_jobs.rejection_reason(j, filter_jobs.MAX_YEARS_REQUIRED) is None))
+    counts["passed"] = connection.execute(
+        "SELECT COUNT(*) FROM scores WHERE rubric = ? AND scored_at BETWEEN ? AND ? AND score >= ?",
+        (rubric, run["started_at"], run["finished_at"], threshold)).fetchone()[0] if run else 0
 
+    promoted = store.promoted_ids(connection)
     # Served pages also ask each company's board, since a job can close after the last collection.
-    closed = closed_since([j for j in jobs if j["score"] >= threshold and j["id"] not in applied]) if live else set()
+    closed = closed_since([j for j in jobs if (j["score"] >= threshold or j["id"] in promoted)
+                           and j["id"] not in applied], ask) if live else set()
     closed_jobs = [j for j in jobs if j["id"] in closed]
     jobs = [j for j in jobs if j["id"] not in closed]
 
-    shortlist = [j for j in jobs if j["score"] >= threshold]
+    shortlist = [j for j in jobs if j["score"] >= threshold or j["id"] in promoted]
     alive: dict[str, bool] = {}
     if check and shortlist:
         alive = check_links(shortlist)
@@ -744,7 +861,8 @@ def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bo
 
     path = pathlib.Path(out)
     path.write_text(render(jobs, new_ids, counts, rubric, alive, docs, store.applied_jobs(connection),
-                           store.dismissed_jobs(connection), store.applications(connection), closed_jobs, waiting),
+                           store.dismissed_jobs(connection), store.applications(connection), closed_jobs, waiting,
+                           store.refused_approvals(connection), promoted),
                     encoding="utf-8")
     if docs:
         print(f"{len(docs)} of {len(shortlist)} shortlisted jobs have a tailored document linked")

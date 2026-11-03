@@ -34,6 +34,7 @@ STATE = {"running": False, "lines": [], "reload": False}
 TRACKING_ACTIONS = {"/api/sent": "sent", "/api/event": "event",
                     "/api/application": "application", "/api/remove": "remove",
                     "/api/dismiss": "dismiss", "/api/restore": "restore",
+                    "/api/promote": "promote",
                     "/api/mail-confirm": "mail_confirm", "/api/mail-ignore": "mail_ignore"}
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -167,14 +168,28 @@ def run_approve(ids: list[str], options) -> None:
         stem = store.job_stem(job, connection) if job else ""
         selection_file = drafts / f"{stem}.json"
         note(f"[{index}/{len(ids)}] {job.get('company','')} - {str(job.get('title',''))[:40]}")
+        # Every way this ends without files is recorded, since the page reloads and the log above goes with it.
         if not selection_file.exists():
             note("    no draft yet, press the other button for this one first")
+            store.record_approval(connection, identifier, ["אין עדיין טיוטה למשרה הזו. לחץ קודם על הכן קורות חיים מותאמים."])
             continue
 
-        selection = json.loads(selection_file.read_text(encoding="utf-8"))
-        clean = approve.reaudit(selection, facts, drafts, stem, options.model)
-        if not clean:
-            note("    not written, the audit flagged something above")
+        try:
+            selection = json.loads(selection_file.read_text(encoding="utf-8"))
+            problems = approve.reaudit(selection, facts, drafts, stem, options.model)
+            # A flagged draft is written again once, told what was flagged, and the new one is audited the same way.
+            if problems:
+                note("    the audit flagged the draft, writing it again without those passages")
+                tailor.write_drafts([job], facts, options.model, drafts, avoid=problems)
+                selection = json.loads(selection_file.read_text(encoding="utf-8"))
+                problems = approve.reaudit(selection, facts, drafts, stem, options.model)
+        except Exception as error:
+            note(f"    failed: {str(error)[:160]}")
+            store.record_approval(connection, identifier, [f"הבדיקה לא הושלמה: {str(error)[:160]}. נסה שוב."])
+            continue
+        store.record_approval(connection, identifier, problems)
+        if problems:
+            note("    not written, the rewritten draft was flagged too; the reasons are on the job's card")
             continue
         for written in render_docx.render_both(selection["chosen"], facts, selection["job"], ready, stem):
             note(f"    wrote {written}")
@@ -250,13 +265,22 @@ def upload_folder(job_id: str, options) -> dict:
              f"{name} - Transcript.pdf": forms.TRANSCRIPT}
     if not files[f"{name} - CV.pdf"].is_file():
         return {"error": "אין קבצים מאושרים למשרה הזו, אשר והפק קודם"}
+    # Windows drops a trailing space or dot from a folder name, so a name cut there is trimmed after the cut.
+    target = UPLOAD_FOLDER / re.sub(r'[<>:"/\\|?*]+', " ", f"{row['company']} - {row['title']}")[:80].strip(" .")
+    # Earlier jobs' folders go as far as they can: a file still open elsewhere, in a PDF viewer or a form
+    # it was dragged into, cannot be deleted on Windows, and it stays rather than stopping this one.
     if UPLOAD_FOLDER.exists():
-        shutil.rmtree(UPLOAD_FOLDER)
-    target = UPLOAD_FOLDER / re.sub(r'[<>:"/\\|?*]+', " ", f"{row['company']} - {row['title']}").strip()[:80]
-    target.mkdir(parents=True)
+        for old in UPLOAD_FOLDER.iterdir():
+            if old != target:
+                shutil.rmtree(old, ignore_errors=True)
+    target.mkdir(parents=True, exist_ok=True)
     for label, source in files.items():
         if source.is_file():
-            shutil.copy2(source, target / label)
+            try:
+                shutil.copy2(source, target / label)
+            except PermissionError:
+                # This job's own copy is already there and open somewhere; it is the same file.
+                pass
     os.startfile(target)
     return {"folder": str(target)}
 
@@ -393,7 +417,8 @@ def make_handler(options):
                 return self.reply(404, b"not found", "text/plain")
 
             # Rebuild on every load, so newly written documents appear without a restart.
-            report.write(options.db, options.profile, "report.html", options.threshold, False, False, live=True)
+            # Closed jobs come from the background check's last answer, so a load never waits on the boards.
+            report.write(options.db, options.profile, "report.html", options.threshold, False, False, live=True, ask=False)
             page = pathlib.Path("report.html").read_text(encoding="utf-8")
             page = page.replace("</body>", '<script src="/browser.js"></script></body>')
             return self.reply(200, page.encode("utf-8"), "text/html; charset=utf-8")
@@ -409,6 +434,13 @@ def make_handler(options):
                 if self.path.startswith("/api/form/drafts"):
                     return self.answer(200, forms.drafts(connection, query.get("job", [""])[0],
                                                          pathlib.Path(options.ready), options.model))
+                # For the panel shown on a site the extension does not fill: the job and its files.
+                if self.path.startswith("/api/form/job"):
+                    return self.answer(200, forms.job_summary(connection, query.get("job", [""])[0],
+                                                              pathlib.Path(options.ready), pathlib.Path(options.drafts)))
+                if self.path.startswith("/api/form/ready"):
+                    return self.answer(200, {"jobs": forms.ready_jobs(connection, pathlib.Path(options.ready),
+                                                                 pathlib.Path(options.drafts))})
                 if self.path.startswith("/api/form/file"):
                     path = forms.file_path(connection, query.get("job", [""])[0], query.get("kind", [""])[0],
                                            pathlib.Path(options.ready))
@@ -458,7 +490,10 @@ def make_handler(options):
                     connection.close()
 
             if self.path == "/api/form/folder":
-                answer = upload_folder(payload.get("job_id", ""), options)
+                try:
+                    answer = upload_folder(payload.get("job_id", ""), options)
+                except Exception as error:
+                    answer = {"error": f"לא הצלחתי להכין את התיקייה: {str(error)[:160]}"}
                 return self.answer(409 if "error" in answer else 200, answer)
 
             if self.path == "/api/form/submitted":
@@ -473,7 +508,10 @@ def make_handler(options):
                     connection.close()
 
             if self.path == "/api/upload-folder":
-                answer = upload_folder(payload.get("job_id", ""), options)
+                try:
+                    answer = upload_folder(payload.get("job_id", ""), options)
+                except Exception as error:
+                    answer = {"error": f"לא הצלחתי להכין את התיקייה: {str(error)[:160]}"}
                 return self.answer(409 if "error" in answer else 200, answer)
 
             if self.path == "/api/mail-check":
@@ -543,8 +581,8 @@ def main() -> int:
     except OSError:
         print(f"port {options.port} is already in use, probably by serve.py running in another window")
         return 1
-    # The page asks each company's board whether its listed jobs closed, once an hour, which took the
-    # first load of each hour about nine seconds. Asking in the background keeps every load quick.
+    # Only this background check asks each company's board whether its listed jobs closed, from the
+    # moment the server starts and then every 50 minutes, so no page load waits for the answers.
     def keep_closed_jobs_fresh():
         import tempfile
         import time
