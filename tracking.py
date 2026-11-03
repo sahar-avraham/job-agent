@@ -142,6 +142,8 @@ def handle(action: str, payload: dict, options) -> tuple[int, dict]:
             store.dismiss_job(connection, payload.get("job_id"))
         elif action == "restore":
             store.restore_job(connection, payload.get("job_id"))
+        elif action == "promote":
+            store.promote_job(connection, payload.get("job_id"))
         elif action == "mail_confirm":
             import mail_sync
             mail_sync.confirm(connection, payload.get("message_id"), payload.get("job_id") or None)
@@ -182,6 +184,7 @@ def app_block(app: dict, today: str, attention: str | None) -> str:
     days = (date.today() - sent).days
     since = "היום" if days == 0 else "אתמול" if days == 1 else f"לפני {days} ימים"
     quiet = f' · <span class="quiet">{esc(attention)}</span>' if attention else ""
+    latest = f' · {KIND_LABELS.get(stage, stage)} {date.fromisoformat(app["last_at"]):%d/%m}' if stage != "sent" else ""
 
     events = "".join(
         f'<li>{date.fromisoformat(e["at"]):%d/%m} · {KIND_LABELS.get(e["kind"], e["kind"])}'
@@ -222,7 +225,7 @@ def app_block(app: dict, today: str, attention: str | None) -> str:
     <span class="title ltr">{esc(app['title'])}</span>
     <span class="company ltr">{esc(app['company'])}</span>
   </div>
-  <p class="sub">הוגש {sent:%d/%m/%Y}, {since}, דרך {CHANNEL_LABELS.get(app['channel'], app['channel'])}{quiet}</p>
+  <p class="sub">הוגש {sent:%d/%m/%Y}, {since}, דרך {CHANNEL_LABELS.get(app['channel'], app['channel'])}{latest}{quiet}</p>
   <div class="tools">
     <button type="button" class="open-update">עדכון</button>
     {links}
@@ -272,13 +275,15 @@ def pending_mail(connection) -> str:
         "SELECT * FROM mail_messages WHERE status = 'pending' ORDER BY received_at DESC")]
     if not rows:
         return ""
-    jobs = [dict(r) for r in connection.execute("SELECT id, company, title FROM jobs")]
+    # Only jobs already applied to, since a reply belongs to an application; the likely ones come first.
+    jobs = [dict(r) for r in connection.execute(
+        "SELECT j.id, a.company, a.title FROM applications a JOIN jobs j ON j.id = a.job_id ORDER BY a.sent_at DESC")]
     blocks = []
     for mail in rows:
         known = (_json.loads(mail["detail"] or "{}").get("candidates") or [])
-        candidates = [j for j in jobs if j["id"] in known] or \
-                     [j for j in jobs if mail["company"] and mail_sync.same_company(j["company"], mail["company"])][:8]
-        blocks.append(pending_block(mail, candidates))
+        likely = [j for j in jobs if j["id"] in known
+                  or (mail["company"] and mail_sync.same_company(j["company"], mail["company"]))]
+        blocks.append(pending_block(mail, likely + [j for j in jobs if j not in likely]))
     return ("<h2>מהמייל, מחכה לאישור שלך</h2><p class=\"meta\">הודעות שנראות קשורות להגשה, "
             "אבל לא היה ברור לאיזו. שום דבר לא נרשם עד שתאשר.</p>" + "".join(blocks))
 
@@ -304,7 +309,8 @@ def render(apps: list[dict], pending: str = "", checked: str = "") -> str:
     flagged = [a for a in apps if attention[a["id"]]]
     cats = {a["id"]: categories(a) for a in apps}
     counts = {key: sum(key in cats[a["id"]] for a in apps) for key, _ in CATEGORIES}
-    newest_first = sorted(apps, key=lambda a: a["sent_at"], reverse=True)
+    # Sort by the latest event rather than the send date, so a reply that came today is on top of its group.
+    newest_first = sorted(apps, key=lambda a: (a["last_at"], a["sent_at"]), reverse=True)
     ordered = sorted(newest_first, key=lambda a: ORDER[cats[a["id"]][1]])  # a stable sort keeps newest first per group
     body = "".join(
         app_block(a, today, attention[a["id"]]).replace(

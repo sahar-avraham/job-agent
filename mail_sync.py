@@ -56,7 +56,10 @@ SENDERS = [
     "applynow.io", "sparkhire.com", "jobs-noreply@linkedin.com", "smartrecruiters.com",
     "workablemail.com", "myworkdayjobs.com", "myworkday.com", "bamboohr.com", "hibob.com",
     "teamtailor.com", "recruitee.com", "breezy.hr", "jobvite.com", "icims.com",
+    "coderpad.io", "hackerrank.com", "codility.com", "testgorilla.com",
 ]
+# Personal mail services, never added as a known sender, since that would match most of the mailbox.
+FREE_MAIL = {"gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com", "yahoo.com", "icloud.com"}
 SUBJECT_WORDS = [
     "application", "applying", "applied", "candidacy", "interview", "assignment",
     "מועמדות", "ראיון", "משרה", "תפקיד", "מועמד",
@@ -143,9 +146,29 @@ def open_mailbox() -> imaplib.IMAP4_SSL:
     return imap
 
 
-def search(imap: imaplib.IMAP4_SSL, days: int) -> list[bytes]:
+def known_senders(connection: sqlite3.Connection) -> list[str]:
+    """The domains that already wrote about an application, so a later reply from a recruiter there is read
+    even when its subject has none of the subject words, such as a rejection titled "Thank you for your time".
+
+    The domain is cut to its last two parts, three under a country's second level such as co.il, so a
+    company's hiring system on a subdomain and its people on the main domain count as one sender.
+    """
+    out = set()
+    for (sender,) in connection.execute("SELECT DISTINCT sender FROM mail_messages WHERE status = 'recorded'"):
+        found = re.search(r"@([\w.-]+)", sender or "")
+        if not found:
+            continue
+        parts = found.group(1).lower().rstrip(".>").split(".")
+        keep = 3 if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in {"co", "com", "org", "net", "ac", "gov"} else 2
+        domain = ".".join(parts[-keep:])
+        if domain not in FREE_MAIL:
+            out.add(domain)
+    return sorted(out - set(SENDERS))
+
+
+def search(imap: imaplib.IMAP4_SSL, days: int, extra: list[str] | None = None) -> list[bytes]:
     """Return the ids of messages that could be about an application, newest last."""
-    senders = " OR ".join(SENDERS)
+    senders = " OR ".join(SENDERS + (extra or []))
     subjects = " OR ".join(SUBJECT_WORDS)
     query = f"newer_than:{days}d (from:({senders}) OR subject:({subjects}))"
     imap.literal = query.encode("utf-8")
@@ -315,14 +338,21 @@ def decide(connection: sqlite3.Connection, mail: dict, reading: Reading) -> tupl
     applications = [dict(r) for r in connection.execute("SELECT * FROM applications")
                     if same_company(r["company"], reading.company)]
     if not applications:
-        # A company that renamed itself signs with the new name but still mails from the old domain, as
-        # Next Insurance did as ERGO NEXT. Join the two only when the domain names the application's
-        # company and the title matches too, so a different company is never mistaken for it.
+        # A company that renamed itself signs with the new name but still mails from the old domain. Join
+        # the two only when the domain names the application's company and the title matches too, so a
+        # different company is never mistaken for it.
         domain = set(re.findall(r"[a-z0-9]+", mail["sender"].lower().rsplit("@", 1)[-1]))
         applications = [dict(r) for r in connection.execute("SELECT * FROM applications")
                         if company_words(r["company"]) and company_words(r["company"]) <= domain
                         and title_similarity(r["title"], reading.job_title) >= 0.8]
     chosen, candidates = best_match(applications, reading.job_title) if applications else (None, [])
+    # A reply is about an application already sent, so with one still open at the company it is that one,
+    # whatever title the mail gives: hiring systems may name the requisition instead.
+    if chosen is None and reading.kind != "confirmation":
+        stages = {a["id"]: a["stage"] for a in store.applications(connection)}
+        open_ones = [a for a in applications if stages.get(a["id"]) not in ("rejection", "withdrawn", "closed")]
+        if len(open_ones) == 1:
+            chosen = open_ones[0]
     job = chosen["job_id"] if chosen else None
     if chosen is None and len(applications) > 1 and not reading.job_title.strip():
         return "pending", None, None, json.dumps({"why": "more than one application at this company"})
@@ -373,7 +403,7 @@ def sync(connection: sqlite3.Connection, model: str = MODEL_CLI, days: int = 120
 
     try:
         seen = {row[0] for row in connection.execute("SELECT message_id FROM mail_messages")}
-        ids = message_ids(imap, search(imap, days))
+        ids = message_ids(imap, search(imap, days, known_senders(connection)))
         unread = [uid for uid in sorted(ids, key=int, reverse=True) if ids[uid] not in seen][:limit]
         mails = [mail for mail in (download(imap, uid) for uid in unread) if mail]
         # An application sent by submit.py matches the search too, and is not a reply from anyone.
@@ -460,7 +490,7 @@ def main() -> int:
             print(f"not working: {error}")
             return 1
         try:
-            found = search(imap, args.days)
+            found = search(imap, args.days, known_senders(store.connect(args.db)))
             print(f"logged in read-only, {len(found)} candidate messages in the last {args.days} days")
             for uid in found[-8:]:
                 mail = download(imap, uid)
