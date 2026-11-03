@@ -34,10 +34,12 @@ COMEET_URL = "https://www.comeet.co/careers-api/2.0/company/{uid}/positions?toke
 REGIONS = {
     "israel": [
         "israel", "tel aviv", "tel-aviv", "telaviv", "herzliya", "herzelia", "haifa",
-        "raanana", "ra'anana", "petah tikva", "petach tikva", "netanya", "jerusalem",
+        "raanana", "ra'anana", "petah tikva", "petach tikva", "petah tikvah", "petach tikvah", "netanya", "jerusalem",
         "rehovot", "yokneam", "beer sheva", "be'er sheva", "ramat gan", "givatayim",
         "holon", "rishon", "caesarea", "hod hasharon", "kfar saba", "modiin",
         "airport city", "or yehuda", "bnei brak", "yakum", "glil yam",
+        # Lemonade's board names its Tel Aviv office only "TLV", and some boards write places in Hebrew.
+        "tlv", "ישראל", "תל אביב",
     ],
 }
 
@@ -299,6 +301,12 @@ def fetch_google(company: str, token: str, descriptions: bool = False) -> list[J
     return employers.fetch_google(company, token, descriptions)
 
 
+def fetch_apple(company: str, token: str, descriptions: bool = False) -> list[Job]:
+    """Read Apple's jobs in one place. The adapter lives in employers.py."""
+    import employers
+    return employers.fetch_apple(company, token, descriptions)
+
+
 def fetch_devjobs(company: str, token: str, descriptions: bool = False) -> list[Job]:
     """Read a company's page on DevJobs, for one whose own site cannot be read. The adapter is devjobs.py."""
     import devjobs
@@ -315,7 +323,7 @@ FETCHERS = {"greenhouse": fetch_greenhouse, "lever": fetch_lever, "ashby": fetch
             "workday": fetch_workday, "workable": fetch_workable, "smartrecruiters": fetch_smartrecruiters,
             "amazon": fetch_amazon, "eightfold": fetch_eightfold,
             "elbit": fetch_elbit, "bob": fetch_bob, "oracle": fetch_oracle,
-            "google": fetch_google, "devjobs": fetch_devjobs, "techmap": fetch_techmap}
+            "google": fetch_google, "apple": fetch_apple, "devjobs": fetch_devjobs, "techmap": fetch_techmap}
 
 
 def fetch_company(entry: tuple[str, str, str], descriptions: bool = False) -> tuple[str, list[Job], str]:
@@ -329,6 +337,14 @@ def fetch_company(entry: tuple[str, str, str], descriptions: bool = False) -> tu
         return company, [], str(error)
 
 
+def names_place(where: str, places: list[str]) -> bool:
+    """Whether a location names one of the places as a whole word, so "tlv" is not found inside
+    "WTLV" and "yakum" not inside "Kanyakumari"."""
+    where = where.lower()
+    return any(re.search(r"(?<![a-z֐-׿])" + re.escape(place) + r"(?![a-z֐-׿])", where)
+               for place in places)
+
+
 def matches(job: Job, keywords: list[str], places: list[str]) -> bool:
     """Keep a job when its title contains any keyword and its location matches any place."""
     title = job.title.lower()
@@ -336,8 +352,7 @@ def matches(job: Job, keywords: list[str], places: list[str]) -> bool:
         return False
     if not places:
         return True
-    where = job.location.lower()
-    return any(place in where for place in places)
+    return names_place(job.location, places)
 
 
 def truncate(text: str, width: int) -> str:

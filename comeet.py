@@ -121,7 +121,7 @@ def count_local(uid: str, token: str, places: list[str]) -> tuple[int, int, str]
     local = 0
     for job in jobs:
         where = fetch_jobs.comeet_location(job).lower()
-        if any(place in where for place in places):
+        if fetch_jobs.names_place(where, places):
             local += 1
     name = next((j.get("company_name") for j in jobs if j.get("company_name")), "")
     return len(jobs), local, name

@@ -74,9 +74,10 @@ def israel_filter(facets: list[dict]) -> tuple[dict[str, list[str]], int]:
     location whose name mentions Israel or an Israeli city, since some sites list only cities.
     """
     # City names without the country's own name, because "Israel" alone also names places abroad,
-    # such as Boston's Beth Israel hospitals; the country counts only where it leads or follows a comma.
+    # such as Boston's Beth Israel hospitals; the country counts only where it leads, follows a comma,
+    # or follows a dash, as in "Remote - Israel".
     places = [p for p in fetch_jobs.REGIONS["israel"] if p != "israel"]
-    country_in_name = re.compile(r"^israel\b|,\s*israel\b|^isr\b")
+    country_in_name = re.compile(r"^israel\b|[,-]\s*israel\b|^isr\b")
     country, cities = {}, {}
 
     def walk(items):

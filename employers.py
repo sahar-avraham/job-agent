@@ -4,6 +4,7 @@ Each one is a companies.json entry like any other board, so run.py collects them
 
     ["Amazon", "amazon", "ISR"]                                     the country code to search
     ["Microsoft", "eightfold", "apply.careers.microsoft.com|microsoft.com"]   the site and its domain
+    ["Apple", "apple", "israel-ISR"]                                the place to search
 
 Eightfold hosts the careers sites of several large employers (Microsoft, Qualcomm, Amdocs). Its search
 answers only within a session the site's own page opened, so each read first loads that page.
@@ -248,17 +249,21 @@ def fetch_google(company: str, token: str, descriptions: bool = False) -> list[f
     A job is a list read by position: 0 id, 1 title, 3 responsibilities, 4 qualifications, 9 places,
     10 about the job, 12 the time it was created.
     """
-    session, posts, page = opener(), [], 1
-    while page <= 50:
+    session = opener()
+
+    def page_of(page: int) -> list:
         request = urllib.request.Request(GOOGLE_SEARCH.format(place=urllib.parse.quote(token), page=page),
                                          headers={"User-Agent": AGENT, "Accept": "text/html"})
         with session.open(request, timeout=30) as response:
             found = GOOGLE_DATA.search(response.read().decode("utf-8", "replace"))
-        data = json.loads(found.group(1)) if found else [[], None, 0, 20]
-        posts += data[0] or []
-        if not data[0] or len(posts) >= (data[2] or 0):
-            break
-        page += 1
+        return json.loads(found.group(1)) if found else [[], None, 0, 20]
+
+    # The first page gives the total and the page size, and the rest are read side by side.
+    first = page_of(1)
+    pages = min(-(-(first[2] or 0) // (first[3] or 20)), 50)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rest = list(pool.map(page_of, range(2, pages + 1)))
+    posts = [post for data in [first, *rest] for post in data[0] or []]
     return [fetch_jobs.Job(
         company=company,
         title=post[1],
@@ -267,3 +272,68 @@ def fetch_google(company: str, token: str, descriptions: bool = False) -> list[f
         url=GOOGLE_JOB.format(id=post[0]),
         description=" ".join(google_text(post[k]) for k in (10, 3, 4)) if descriptions else "",
     ) for post in posts]
+
+
+APPLE_SEARCH = "https://jobs.apple.com/en-il/search?location={place}&page={page}"
+APPLE_JOB = "https://jobs.apple.com/en-il/details/{id}/{slug}"
+# Each page carries its data for its own script as a JSON string inside JSON.parse("...").
+APPLE_DATA = re.compile(r'window\.__staticRouterHydrationData = JSON\.parse\(("(?:[^"\\]|\\.)*")\);', re.S)
+
+
+def apple_data(session: urllib.request.OpenerDirector, url: str) -> dict:
+    request = urllib.request.Request(url, headers={"User-Agent": AGENT, "Accept": "text/html"})
+    with session.open(request, timeout=30) as response:
+        found = APPLE_DATA.search(response.read().decode("utf-8", "replace"))
+    return json.loads(json.loads(found.group(1)))["loaderData"] if found else {}
+
+
+def fetch_apple(company: str, token: str, descriptions: bool = False) -> list[fetch_jobs.Job]:
+    """Read Apple's jobs in one place, such as "israel-ISR", twenty a page, from its careers search.
+
+    A role open in two cities is listed once per city, with its own id, so each city is a job of its own.
+    Descriptions only for new jobs whose title passes the hard rules, read from each job's page.
+    """
+    session = opener()
+
+    def page_of(page: int) -> dict:
+        # A page now and then comes back without its results, so an empty page is asked for once more.
+        for _ in range(2):
+            search = apple_data(session, APPLE_SEARCH.format(place=urllib.parse.quote(token), page=page)).get("search") or {}
+            if search.get("searchResults"):
+                break
+        return search
+
+    # The first page gives the total, and the rest are read side by side, since the jobs page waits on this read.
+    first = page_of(1)
+    pages = min(-(-int(first.get("totalRecords") or 0) // 20), 50)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        rest = list(pool.map(page_of, range(2, pages + 1)))
+    posts = [post for search in [first, *rest] for post in search.get("searchResults") or []]
+
+    jobs = [fetch_jobs.Job(
+        company=company,
+        title=" ".join((post.get("postingTitle") or "").split()),
+        location="; ".join(", ".join(dict.fromkeys(p for p in (place.get("name"), place.get("countryName")) if p))
+                           for place in post.get("locations") or []) or "Israel",
+        posted=(post.get("postDateInGMT") or "")[:10],
+        url=APPLE_JOB.format(id=post["id"], slug=post.get("transformedPostingTitle") or "job"),
+    ) for post in posts if post.get("id")]
+
+    if descriptions:
+        known = known_descriptions("jobs.apple.com")
+
+        def describe(job: fetch_jobs.Job) -> fetch_jobs.Job:
+            if job.url in known:
+                job.description = known[job.url]
+            elif workday.worth_reading(job.title):
+                try:
+                    data = (apple_data(session, job.url).get("jobDetails") or {}).get("jobsData") or {}
+                    job.description = " ".join(fetch_jobs.strip_html(data.get(k) or "") for k in (
+                        "description", "responsibilities", "minimumQualifications", "preferredQualifications"))
+                except Exception:
+                    pass
+            return job
+
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            jobs = list(pool.map(describe, jobs))
+    return jobs

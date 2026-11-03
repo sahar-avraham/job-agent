@@ -24,6 +24,9 @@ import fetch_jobs
 
 CATALOGUE_DIR = pathlib.Path("catalogue")
 RESULT_FILE = CATALOGUE_DIR / "boards.json"
+# Boards taken out of companies.json on purpose, such as job aggregators, which the monthly sweep
+# would otherwise add back: a list of [board, token] pairs.
+SKIP_FILE = CATALOGUE_DIR / "skip.json"
 
 # One public catalogue per board, refreshed daily by its maintainer.
 SOURCES = {
@@ -92,7 +95,7 @@ def inspect(entry: tuple[str, str], places: list[str], timeout: float) -> dict |
         if isinstance(where, dict):
             where = where.get("name", "")
         where = str(where or "").lower()
-        if any(place in where for place in places):
+        if fetch_jobs.names_place(where, places):
             local += 1
 
     return {
@@ -174,6 +177,35 @@ def report(minimum: int, existing: set[str], save: bool = False) -> None:
         print(f"\nadded {added} to companies.json")
     elif fresh:
         print("\nrun again with --save to add them to companies.json")
+
+
+# A board with no local jobs when swept is never read, so the sweep is repeated monthly to find the
+# companies that started hiring locally since.
+RESWEEP_DAYS = 30
+
+
+def resweep_if_due(connection, region: str = "israel") -> list[tuple[str, str, str]]:
+    """Once a month, check every catalogue board again and add those that now publish in the region.
+
+    Returns the boards added. Takes about fifteen minutes when due, and nothing otherwise.
+    """
+    import store
+    from datetime import datetime, timedelta, timezone
+
+    last = store.get_meta(connection, "catalogue_swept_at")
+    if last and datetime.now(timezone.utc) - datetime.fromisoformat(last) < timedelta(days=RESWEEP_DAYS):
+        return []
+    catalogues = load_catalogues(refresh=True)
+    sweep(catalogues, region, workers=10, timeout=15.0, limit=0, again=True)
+    existing = {(board, token) for _, board, token in fetch_jobs.COMPANIES}
+    existing |= {tuple(pair) for pair in json.loads(SKIP_FILE.read_text(encoding="utf-8"))} if SKIP_FILE.exists() else set()
+    done = json.loads(RESULT_FILE.read_text(encoding="utf-8"))
+    fresh = [(r["name"], r["board"], r["token"]) for r in done.values()
+             if r.get("local") and (r["board"], r["token"]) not in existing]
+    fetch_jobs.add_companies(fresh)
+    fetch_jobs.COMPANIES[:] = fetch_jobs.load_companies()
+    store.set_meta(connection, "catalogue_swept_at", store.now())
+    return fresh
 
 
 def main() -> int:
