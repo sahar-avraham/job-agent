@@ -44,15 +44,29 @@ def show(selection: dict, facts: dict[str, str]) -> None:
     print(f"\nCOVER LETTER\n  {chosen['cover_note']}")
 
 
-def reaudit(selection: dict, facts: dict[str, str], folder: pathlib.Path, stem: str, model: str) -> bool:
-    """Check the text that is about to be written, and report what it says.
+def words_of(text: str) -> str:
+    return " ".join(re.findall(r"[\w+#.%-]+", text.lower()))
+
+
+def in_facts(item: str, facts: dict[str, str]) -> bool:
+    """Whether a flagged passage is a fact's own wording, which the audit then flagged by mistake.
+
+    The audit is a model and sometimes flags a line copied from facts.md word for word. Such a line is
+    supported by definition, so it is set aside in code; a short or reworded passage still counts.
+    """
+    passage = words_of(item.split(":", 1)[-1] if item.count('"') < 2 else item.split('"')[1])
+    return len(passage) >= 25 and any(passage in words_of(text) for text in facts.values())
+
+
+def reaudit(selection: dict, facts: dict[str, str], folder: pathlib.Path, stem: str, model: str) -> list[str]:
+    """Check the text that is about to be written, and return what the audit found, empty when clean.
 
     The files are built from the selection and today's facts, so a draft written before a fact changed
     would be checked on its old wording. The text and the letter are rebuilt from today's facts first,
     and the draft on the page is rewritten to match, so what is read, checked and sent are the same.
     """
-    # A draft from before the fixed letter has no new_field; it gets the fixed letter without that line.
-    chosen = tailor.Tailored.model_validate({"new_field": "", **selection["chosen"]})
+    # The letter is rebuilt from today's fixed lines, so an older draft's letter loses any line removed since.
+    chosen = tailor.Tailored.model_validate(selection["chosen"])
     chosen.cover_note = tailor.cover_letter(chosen, facts, selection["job"])
     selection["chosen"]["cover_note"] = chosen.cover_note
     document = tailor.document_text(chosen, facts, selection["job"])
@@ -68,16 +82,15 @@ def reaudit(selection: dict, facts: dict[str, str], folder: pathlib.Path, stem: 
         model=model,
     )
     audit = tailor.Audit.model_validate(claude_cli.extract_json(text))
-    clean = not audit.unsupported and not audit.exaggerations
+    found = [f"unsupported: {item}" for item in audit.unsupported] + [f"stretched: {item}" for item in audit.exaggerations]
+    problems = [item for item in found if not in_facts(item, facts)]
 
     print("\nAUDIT")
-    if clean:
+    for item in found:
+        print(f"  {item}" if item in problems else f"  set aside, facts.md says it word for word: {item}")
+    if not problems:
         print("  nothing unsupported found this time")
-    for item in audit.unsupported:
-        print(f"  unsupported: {item}")
-    for item in audit.exaggerations:
-        print(f"  stretched:   {item}")
-    return clean
+    return problems
 
 
 def main() -> int:
@@ -118,7 +131,7 @@ def main() -> int:
     facts = tailor.load_facts(pathlib.Path(args.facts))
 
     show(selection, facts)
-    clean = True if args.no_audit else reaudit(selection, facts, drafts, path.stem, args.model)
+    clean = True if args.no_audit else not reaudit(selection, facts, drafts, path.stem, args.model)
 
     if not args.yes:
         prompt = "\napprove and write the Word files? [y/N] > " if clean else \

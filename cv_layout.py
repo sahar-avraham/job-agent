@@ -18,17 +18,20 @@ from dataclasses import dataclass, field
 
 HEADER = re.compile(r"^[A-Z]H\d+$")
 
-# Skill categories and their order, as in the original CV. Display text is the fact's own words,
-# except where the fact carries a qualifier meant for the model rather than the reader.
+# Skill categories and their order, as in the original CV, each named by its header line in facts.md.
+# Display text is the fact's own words, except where the fact carries a qualifier meant for the model
+# rather than the reader.
 SKILL_GROUPS = [
-    ("Languages", ["K1", "K3", "K2"]),
-    ("Backend", ["K4", "K5", "K6", "K7"]),
-    ("Frontend", ["K16"]),
-    ("Databases", ["K8", "K18"]),
-    ("Testing", ["K9"]),
-    ("Infrastructure & Tools", ["K10", "K11", "K12", "K13"]),
-    ("Networking", ["K15"]),
-    ("AI and LLM Work", ["K19", "K17"]),
+    ("KH1", ["K1", "K3", "K2"]),
+    ("KH2", ["K4", "K5", "K6", "K7"]),
+    ("KH3", ["K16", "K22"]),
+    ("KH4", ["K8", "K18"]),
+    ("KH5", ["K9"]),
+    ("KH6", ["K10", "K11", "K12", "K13"]),
+    ("KH7", ["K14"]),
+    ("KH8", ["K15"]),
+    ("KH9", ["K19", "K17"]),
+    ("KH10", ["K20", "K21"]),
 ]
 # Printed for every job, whatever the selection, as the core a recruiter looks for first.
 # Everything else appears only when the selection names it, so the list reads as what the
@@ -119,10 +122,10 @@ def build(chosen, facts: dict[str, str]) -> Layout:
 
     wanted = CORE_SKILLS | set(get("skill_ids") or [])
     skills = []
-    for name, ids in SKILL_GROUPS:
+    for header, ids in SKILL_GROUPS:
         texts = [facts.get(i + DISPLAY_SUFFIX, facts[i]) for i in ids if i in facts and i in wanted]
         if texts:
-            skills.append((name, ", ".join(texts)))
+            skills.append((facts.get(header, "Skills"), ", ".join(texts)))
 
     picked = one_wording([i for i in get("project_ids") if i in facts and not HEADER.match(i)])
     letters = [letter for letter, _, _ in PROJECTS]

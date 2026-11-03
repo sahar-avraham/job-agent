@@ -67,5 +67,6 @@ The whole letter. The header names the company and the role, and {field} is fill
 
 ## Skills
 
+- [KH1] Languages | tags: header
 - [K1] Java | tags: java
 - [K2] Python | tags: python

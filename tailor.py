@@ -50,7 +50,8 @@ class Tailored(BaseModel):
     skill_ids: list[str] = Field(description="Skill ids this posting uses or that support the headline; a small core prints anyway, so list only what is relevant.")
     education_ids: list[str] = Field(description="Course ids (G lines) worth listing for this posting, best first, at most four, and any other education line the rules allow for this posting; empty when none fits. The degree and languages print on their own.")
     lead_with: Literal["experience", "projects"] = Field(description="Which section to print first, whichever the posting values more.")
-    new_field: str = Field(description="The company's field in two to five plain words, only when it is new to the candidate and no fact touches it; otherwise empty.")
+    # Kept so drafts from before the letter lost its field still load; never asked for any more.
+    new_field: SkipJsonSchema[str] = ""
     reasoning: list[str] = Field(description="Two or three sentences on why this selection and order suit this posting.")
     # Assembled in code from the fixed letter lines, so the model never sees or writes it.
     cover_note: SkipJsonSchema[str] = ""
@@ -91,17 +92,6 @@ the one closest to what this posting cares about, and never two of the same fact
 Lines with an R id are the candidate's own rules for
 presenting their background, such as which summary lines to use and in what order:
 follow them exactly, and never select or quote them.
-
-The cover letter is fixed text the candidate wrote, and you fill one field in it.
-It reads: {letter}
-
-- new_field: the company's field in two to five plain words starting with a capital
-  letter, such as "Medical imaging" or "Mobile gaming". The field is what the company's
-  product is about, never the kind of role, so never a name like "GTM engineering". Fill it only when the field is
-  new to the candidate and no fact touches it. Leave it empty for any field a fact
-  touches, since the letter would then say something false.
-  A fact about service, work or study in an organization of the company's field touches
-  that field too, even when the fact never names the field.
 
 --- FACTS, THE ONLY PERMITTED SOURCE ---
 {facts}
@@ -154,9 +144,6 @@ when a fact supports the general claim but the document has strengthened it, for
 example turning familiarity into expertise or a project into professional
 experience.
 
-A sentence saying a field is new to the candidate is a claim too. Report it as
-unsupported when a fact shows work, study or service in that field.
-
 Rephrasing is allowed. Reordering is allowed. Inventing is not.
 
 --- FACTS ---
@@ -181,20 +168,21 @@ Answer again, bringing in whichever of them fit this posting best, within the sa
 Do not bring in anything else for its sake.
 """
 
-LETTER_NOTE = """
+AVOID_NOTE = """
 
-A check of your first answer found these problems in new_field: {problems}.
-Answer again with the same selection, and rewrite only new_field so that none of these
-problems remains.
+An audit of an earlier answer for this job found these passages unsupported or stretched:
+{problems}
+Answer again so that none of them appears: leave out the lines that produced them, choose other
+lines the facts support.
 """
 
-# Phrases that turned up again and again in model-written letters, kept for the one field the model still writes.
+# Phrases that turned up again and again in model-written text, still kept out of the form answers.
 BANNED_PHRASES = ["building side", "depend on", "short stop", "learn properly", "skim", "passion",
                   "excited", "thrilled", "leverage", "deep dive", "exactly the kind", "confident",
                   "the kind of work", "at home", "close to the machine", "keen", "journey", "—", ";"]
-# The letter's two paragraphs, in print order; L2 carries the new field and is left out without one.
-LETTER_PARAGRAPHS = (("L1", "L5", "L2"), ("L3", "L4"))
-# The lines a student role reads instead, which say the degree is completed but not yet conferred.
+# The letter's two paragraphs, in print order, every line the candidate's own.
+LETTER_PARAGRAPHS = (("L1", "L5"), ("L3", "L4"))
+# The lines a student role reads instead of the regular ones, when the fact file has them.
 STUDENT_LINES = {"L1": "L1s", "L4": "L4s", "S5": "S5s", "S5a": "S5as"}
 
 
@@ -209,23 +197,9 @@ def student_summary(chosen: Tailored, job: dict, facts: dict[str, str]) -> Tailo
     return chosen.model_copy(update={"summary_ids": for_role(chosen.summary_ids, job, facts)})
 
 
-def letter_problems(chosen: Tailored) -> list[str]:
-    """List what breaks the letter's rules in the field the model wrote, checked in code rather than trusted."""
-    problems = [f'uses "{p}"' for p in BANNED_PHRASES if p in chosen.new_field.lower()]
-    if len(chosen.new_field.split()) > 5:
-        problems.append("new_field is over five words")
-    # The line reads "{field} is new to me", so a plural field breaks the grammar.
-    last = (chosen.new_field.split() or [""])[-1].lower().rstrip(".")
-    if last.endswith("s") and not last.endswith(("ss", "ics", "us", "is", "ness")):
-        problems.append("new_field is plural, and the letter line says 'is'; name the field in the singular")
-    return problems
-
-
 def cover_letter(chosen: Tailored, facts: dict[str, str], job: dict) -> str:
-    """Put the new field, when there is one, into the candidate's fixed lines, as two paragraphs."""
-    field = chosen.new_field.strip().rstrip(".")
-    lines = dict(facts, L2=facts.get("L2", "").replace("{field}", field[:1].upper() + field[1:]) if field else "")
-    return "\n".join(" ".join(lines[i] for i in for_role(part, job, facts) if lines.get(i)) for part in LETTER_PARAGRAPHS)
+    """The candidate's fixed letter lines as two paragraphs, in the student wording for a student role."""
+    return "\n".join(" ".join(facts[i] for i in for_role(part, job, facts) if facts.get(i)) for part in LETTER_PARAGRAPHS)
 
 
 def facts_text(facts: dict[str, str]) -> str:
@@ -254,16 +228,18 @@ def document_text(chosen: Tailored, facts: dict[str, str], job: dict) -> str:
     return cv_layout.as_text(cv_layout.build(chosen, facts), cover_letter(chosen, facts, job))
 
 
-def tailor(job: dict, facts: dict[str, str], model: str) -> tuple[Tailored, Audit, str]:
-    """Select, render, then audit. The audit sees the document and the facts, never the posting."""
+def tailor(job: dict, facts: dict[str, str], model: str, avoid: list[str] | None = None) -> tuple[Tailored, Audit, str]:
+    """Select, render, then audit. The audit sees the document and the facts, never the posting.
+
+    With avoid, the passages an earlier audit flagged for this job are named, so the answer leaves them out.
+    """
     prompt = SELECT_PROMPT.format(
         # The fixed letter lines are shown in the prompt text, and the motivation lines, the writing
         # sample and the problem stories for forms are not CV material, so none is offered as a fact.
         # The student wordings are swapped in by code after the selection, so the model never picks one.
-        # The short forms of skills are printed by the layout in place of the long ones, never chosen.
+        # The short forms of skills and the names of their categories are printed by the layout, never chosen.
         facts=facts_block({k: v for k, v in facts.items() if k[0] not in "LMWTD" and k not in STUDENT_LINES.values()
-                           and not k.endswith(cv_layout.DISPLAY_SUFFIX)}),
-        letter=" ".join(facts.get(i, "") for part in LETTER_PARAGRAPHS for i in for_role(part, job, facts)),
+                           and not k.endswith(cv_layout.DISPLAY_SUFFIX) and not k.startswith("KH")}),
         company=job["company"],
         title=job["title"],
         location=job.get("location", ""),
@@ -272,6 +248,8 @@ def tailor(job: dict, facts: dict[str, str], model: str) -> tuple[Tailored, Audi
         gaps="; ".join(job.get("gaps", [])) or "none recorded",
         schema=json.dumps(Tailored.model_json_schema(), indent=2),
     )
+    if avoid:
+        prompt += AVOID_NOTE.format(problems="\n".join(f"- {item}" for item in avoid))
     text, _ = claude_cli.ask(prompt, model=model)
     chosen = student_summary(Tailored.model_validate(claude_cli.extract_json(text)), job, facts)
 
@@ -293,19 +271,9 @@ def tailor(job: dict, facts: dict[str, str], model: str) -> tuple[Tailored, Audi
         if not unknown_ids(retry, facts):
             retry_document = document_text(retry, facts, job)
             still = keywords.coverage(job.get("description") or "", retry_document, facts_text(facts))["missed"]
-            if len(still) < len(left_out) and len(letter_problems(retry)) <= len(letter_problems(chosen)):
+            if len(still) < len(left_out):
                 chosen, document = retry, retry_document
 
-    # When the new field breaks a rule the code can check, ask once more and take only the
-    # rewritten field, so the CV selection already settled above stays as it is.
-    problems = letter_problems(chosen)
-    if problems:
-        again_text, _ = claude_cli.ask(prompt + LETTER_NOTE.format(problems="; ".join(problems)), model=model)
-        again = Tailored.model_validate(claude_cli.extract_json(again_text))
-        if len(letter_problems(again)) < len(problems):
-            chosen = chosen.model_copy(update={k: getattr(again, k) for k in
-                                               ("new_field",)})
-            document = document_text(chosen, facts, job)
     chosen.cover_note = cover_letter(chosen, facts, job)
 
     audit_text, _ = claude_cli.ask(
@@ -403,15 +371,16 @@ def audit_existing(folder: pathlib.Path, facts: dict[str, str], model: str, only
     return 0
 
 
-def write_drafts(jobs: list[dict], facts: dict[str, str], model: str, out: pathlib.Path) -> int:
-    """Tailor each job and write its draft files, returning how many failed the audit."""
+def write_drafts(jobs: list[dict], facts: dict[str, str], model: str, out: pathlib.Path,
+                 avoid: list[str] | None = None) -> int:
+    """Tailor each job and write its draft files, returning how many failed the audit. Avoid goes to tailor."""
     out.mkdir(exist_ok=True)
     blocked = 0
 
     for job in jobs:
         print(f"{job['score']:>3}  {job['company']} - {job['title'][:44]}")
         try:
-            chosen, audit, document = tailor(job, facts, model)
+            chosen, audit, document = tailor(job, facts, model, avoid)
         except (claude_cli.ClaudeCliError, ValidationError, ValueError) as error:
             print(f"     failed: {str(error)[:180]}\n", file=sys.stderr)
             continue
@@ -454,7 +423,7 @@ def untailored(connection, jobs: list[dict], out: pathlib.Path) -> list[dict]:
     """
     settled = store.settled_ids(connection)
     # Read from every application, since one recorded from mail may not be linked to a stored job, and
-    # matched by words, since an application may carry a fuller name, such as ERGO NEXT (Next Insurance).
+    # matched by words, since an application may carry a fuller name than the board gives.
     applied = [row[0] for row in connection.execute("SELECT company FROM applications")]
     return [j for j in jobs if j["id"] not in settled
             and not any(mail_sync.same_company(j["company"], name) for name in applied)
