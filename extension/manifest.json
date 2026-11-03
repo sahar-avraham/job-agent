@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "job-agent forms",
-  "version": "0.1.0",
-  "description": "Fills Greenhouse, Workday, Lever and SmartRecruiters application forms from the local job-agent server. It never submits a form.",
+  "version": "0.2.0",
+  "description": "Fills Greenhouse, Workday, Lever and SmartRecruiters application forms from the local job-agent server, and on any other site opened from the jobs page shows the job's files. It never submits a form.",
   "permissions": [
-    "storage"
+    "storage",
+    "scripting"
   ],
   "host_permissions": [
-    "http://127.0.0.1:8777/*"
+    "http://127.0.0.1:8777/*",
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
@@ -73,6 +75,15 @@
       "js": [
         "fillers.js",
         "smartrecruiters.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1:8777/*"
+      ],
+      "js": [
+        "jobpage.js"
       ],
       "run_at": "document_idle"
     }
