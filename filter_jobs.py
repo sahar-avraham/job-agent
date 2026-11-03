@@ -103,7 +103,7 @@ OLD_DAYS = 90
 # the ones that involve code. Escalation and NOC work are the same job under another name.
 SUPPORT_TITLES = re.compile(r"\bsupport\b|\bhelp ?desk\b|\btier \d\b|\bescalation\b|\bnoc\b|תמיכה", re.I)
 
-# Roles for students, where the CV and letter say the degree is completed but not yet conferred.
+# Roles for students and interns, which the hard rules drop.
 STUDENT_ROLE = re.compile(r"\bstudent\b|\bintern\b|\binternship\b|סטודנט", re.I)
 
 # The commute area is personal, so it lives in commute.json, kept out of git like companies.json;
@@ -125,8 +125,8 @@ INSIDE_AREA, OUTSIDE_AREA = load_commute()
 OUTSIDE = phrases(OUTSIDE_AREA) if OUTSIDE_AREA else None
 INSIDE = phrases(INSIDE_AREA) if INSIDE_AREA else None
 
-# Jobs at these companies are dropped regardless of anything else.
-COMPANY_BLOCKLIST: list[str] = []
+# Jobs at these companies are dropped regardless of anything else; InfinityLabs posts training programs as jobs.
+COMPANY_BLOCKLIST: list[str] = ["InfinityLabs", "Infinity Labs"]
 
 # A junior word in the title marks the role itself. In the description it usually does not,
 # because "mentor junior engineers" is a line in senior postings, so only unambiguous phrases count there.
@@ -314,7 +314,12 @@ def rejection_reason(job: dict, max_years: int) -> str | None:
     if match := ROLES.search(title):
         return f"non-engineering title ({match.group(1).lower()})"
     if match := SENIORITY.search(title):
-        return f"too senior ({match.group(1).lower()})"
+        # A level number is a company's own ladder, and Google's "III" asks for two years, so a level III
+        # whose posting states a reachable number of years, with no other senior word, is left to the years rule.
+        years = required_years(description or "")
+        others = SENIORITY.search(re.sub(r"\bIII\b", "", title, flags=re.I))
+        if not (match.group(1).lower() == "iii" and not others and years is not None and years <= max_years):
+            return f"too senior ({match.group(1).lower()})"
     if match := DISCIPLINES.search(title):
         return f"not software ({match.group(1).lower()})"
     if match := LOW_SCORING.search(title):
@@ -328,6 +333,8 @@ def rejection_reason(job: dict, max_years: int) -> str | None:
 
     if SUPPORT_TITLES.search(title) and not SECURITY_ANALYST.search(title):
         return "support role"
+    if STUDENT_ROLE.search(title):
+        return "student or intern role"
     location = job.get("location") or ""
     if OUTSIDE and (match := OUTSIDE.search(location)) and not (INSIDE and INSIDE.search(location)):
         return f"outside the commute area ({match.group(1).lower()})"

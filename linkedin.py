@@ -1,15 +1,15 @@
-"""LinkedIn's public page for one job, read by the job's number, for a job no other source gives the text of.
+"""LinkedIn's public job search and its page for one job, both as any visitor who is not signed in.
 
-Only the job page is read, never a search: the number comes from the link a list of jobs already gave
-(the Tech Map's), and the page is the one LinkedIn shows any visitor who is not signed in. No account,
-no cookie. LinkedIn's terms forbid automated reading, so this stays small and stops at the first sign
-of refusal (see scout.complete, which paces the requests and keeps the count low).
+The search finds the jobs at companies no board reads and no list gives; the job page gives a job's text,
+for those and for the Tech Map's jobs, by the job's number. No account, no cookie. This stays small and stops
+at the first sign of refusal (see scout.complete, which paces the requests and keeps the count low).
 """
 
 from __future__ import annotations
 
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import date, timedelta
 
@@ -17,6 +17,18 @@ import fetch_jobs
 import workday
 
 JOB = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{number}"
+SEARCH = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?"
+# The roles searched for each day, in Israel, posted in the past week, at internship, entry and associate level.
+QUERIES = ["Backend Developer", "Full Stack Developer", "Software Engineer", "DevOps Engineer",
+           "Junior Developer", "Junior Software Engineer", "AI Engineer", "Graduate Software Engineer"]
+SEARCH_FILTERS = {"location": "Israel", "geoId": "101620260", "f_TPR": "r604800", "f_E": "1,2,3"}
+PAGE_SIZE = 10
+CARD = re.compile(r"<li>(.*?)</li>", re.S)
+CARD_FIELDS = {"title": re.compile(r'base-search-card__title[^>]*>(.*?)</h3>', re.S),
+               "company": re.compile(r'base-search-card__subtitle[^>]*>(.*?)</h4>', re.S),
+               "location": re.compile(r'job-search-card__location[^>]*>(.*?)</span>', re.S),
+               "url": re.compile(r'base-card__full-link[^>]*href="([^"?]*)'),
+               "posted": re.compile(r'<time[^>]*datetime="([^"]*)"')}
 NUMBER = re.compile(r"linkedin\.com/jobs/view/\S*?-?(\d{8,})(?:\D|$)")
 AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 DESCRIPTION = re.compile(r'show-more-less-html__markup[^>]*>(.*?)</div>', re.S)
@@ -59,16 +71,44 @@ def parse(page: str, today: date | None = None) -> dict:
             "posted": posted_on(fetch_jobs.strip_html(posted.group(1)), today) if posted else ""}
 
 
+def parse_cards(page: str) -> list[dict]:
+    """Read a page of search results into each job's title, company, place, link and posting date."""
+    cards = []
+    for block in CARD.findall(page):
+        card = {field: (found.group(1).strip() if (found := pattern.search(block)) else "")
+                for field, pattern in CARD_FIELDS.items()}
+        for field in ("title", "company", "location"):
+            card[field] = " ".join(fetch_jobs.strip_html(card[field]).split())
+        if card["url"] and card["title"] and number_of(card["url"]):
+            cards.append(card)
+    return cards
+
+
+def ask(url: str) -> str:
+    """One page as a visitor who is not signed in. Raises Refused on any answer that means "stop"."""
+    request = urllib.request.Request(url, headers={"User-Agent": AGENT, "Accept": "text/html"})
+    with urllib.request.urlopen(request, timeout=25, context=workday.CONTEXT) as response:
+        final, page = response.geturl(), response.read().decode("utf-8", "replace")
+    if re.search(r"authwall|/login|/uas/", final):
+        raise Refused("sign-in page")
+    return page
+
+
+def search(keywords: str, start: int = 0) -> list[dict]:
+    """One page of the public job search, PAGE_SIZE jobs from start."""
+    try:
+        page = ask(SEARCH + urllib.parse.urlencode({"keywords": keywords, **SEARCH_FILTERS, "start": start}))
+    except urllib.error.HTTPError as error:
+        raise Refused(f"HTTP {error.code} on the search")
+    return parse_cards(page)
+
+
 def read(number: str) -> dict:
     """Ask for one job page. Raises Refused on any answer that means "stop"."""
-    request = urllib.request.Request(JOB.format(number=number), headers={"User-Agent": AGENT, "Accept": "text/html"})
     try:
-        with urllib.request.urlopen(request, timeout=25, context=workday.CONTEXT) as response:
-            final, page = response.geturl(), response.read().decode("utf-8", "replace")
+        page = ask(JOB.format(number=number))
     except urllib.error.HTTPError as error:
         if error.code in (404, 410):
             return {"result": "gone"}
         raise Refused(f"HTTP {error.code}")
-    if re.search(r"authwall|/login|/uas/", final):
-        raise Refused("sign-in page")
     return parse(page)

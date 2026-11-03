@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     description TEXT,
     first_seen  TEXT NOT NULL,
     last_seen   TEXT NOT NULL,
-    posted      TEXT
+    posted      TEXT,
+    source      TEXT
 );
 
 CREATE TABLE IF NOT EXISTS scores (
@@ -61,7 +62,8 @@ CREATE TABLE IF NOT EXISTS runs (
     new_jobs    INTEGER DEFAULT 0,
     kept        INTEGER DEFAULT 0,
     scored      INTEGER DEFAULT 0,
-    failed      INTEGER DEFAULT 0
+    failed      INTEGER DEFAULT 0,
+    details     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_scores_decision ON scores(decision, score);
@@ -106,6 +108,19 @@ CREATE TABLE IF NOT EXISTS dismissed (
 );
 
 CREATE INDEX IF NOT EXISTS idx_dismissed_key ON dismissed(key);
+
+CREATE TABLE IF NOT EXISTS promoted (
+    job_id      TEXT PRIMARY KEY,
+    promoted_at TEXT NOT NULL
+);
+
+-- The last approval of each job, kept so a refusal is still on the page after it reloads.
+-- problems is a JSON list, empty when the files were written.
+CREATE TABLE IF NOT EXISTS approvals (
+    job_id   TEXT PRIMARY KEY,
+    at       TEXT NOT NULL,
+    problems TEXT NOT NULL
+);
 
 -- What each application form was told, question by question, so an interview never
 -- meets an answer nobody remembers giving. Keyed by job, because the answers
@@ -153,6 +168,19 @@ CREATE TABLE IF NOT EXISTS map_texts (
     source TEXT NOT NULL,
     result TEXT NOT NULL,
     at     TEXT NOT NULL
+);
+
+-- Every job LinkedIn's search listed, since the search shows a job only in its first week and the job
+-- stays a candidate after that.
+CREATE TABLE IF NOT EXISTS linkedin_found (
+    url        TEXT PRIMARY KEY,
+    company    TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    location   TEXT,
+    posted     TEXT,
+    query      TEXT,
+    first_seen TEXT NOT NULL,
+    last_seen  TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS scout (
@@ -223,6 +251,11 @@ def connect(path: str = DB_PATH) -> sqlite3.Connection:
     # A database made before the posting date was kept gains the column here.
     if "posted" not in {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}:
         connection.execute("ALTER TABLE jobs ADD COLUMN posted TEXT")
+    # Which source gave a job: boards, techmap or linkedin, set by the latest collection that saw it.
+    if "source" not in {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}:
+        connection.execute("ALTER TABLE jobs ADD COLUMN source TEXT")
+    if "details" not in {row[1] for row in connection.execute("PRAGMA table_info(runs)")}:
+        connection.execute("ALTER TABLE runs ADD COLUMN details TEXT")
     return connection
 
 
@@ -268,6 +301,26 @@ def finish_run(connection: sqlite3.Connection, run: int, **counts: int) -> None:
     connection.commit()
 
 
+def remember_found(connection: sqlite3.Connection, cards: list[dict]) -> int:
+    """Keep the jobs a LinkedIn search listed and return how many were never listed before."""
+    stamp = now()
+    known = {row[0] for row in connection.execute("SELECT url FROM linkedin_found")}
+    for card in cards:
+        connection.execute(
+            "INSERT INTO linkedin_found (url, company, title, location, posted, query, first_seen, last_seen)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(url) DO UPDATE SET last_seen = excluded.last_seen",
+            (card["url"], card["company"], card["title"], card["location"], card["posted"] or None,
+             card.get("query", ""), stamp, stamp))
+    connection.commit()
+    return sum(1 for card in cards if card["url"] not in known)
+
+
+def found_since(connection: sqlite3.Connection, since: str) -> list[dict]:
+    """The jobs LinkedIn's search listed that were posted, or first listed when it gave no date, on or after since."""
+    return [dict(row) for row in connection.execute(
+        "SELECT * FROM linkedin_found WHERE COALESCE(posted, substr(first_seen, 1, 10)) >= ?", (since,))]
+
+
 def upsert_jobs(connection: sqlite3.Connection, jobs: list[dict]) -> list[str]:
     """Store every job seen and return the ids of the ones never seen before."""
     stamp = now()
@@ -280,14 +333,14 @@ def upsert_jobs(connection: sqlite3.Connection, jobs: list[dict]) -> list[str]:
             connection.execute(
                 # A board that gives no date this time, as Workday does for a description read earlier, keeps the known one.
                 "UPDATE jobs SET last_seen = ?, description = ?, title = ?, location = ?,"
-                " posted = COALESCE(NULLIF(?, ''), posted) WHERE id = ?",
+                " posted = COALESCE(NULLIF(?, ''), posted), source = ? WHERE id = ?",
                 (stamp, job.get("description", ""), job.get("title", ""), job.get("location", ""),
-                 job.get("posted") or "", identifier),
+                 job.get("posted") or "", job.get("source") or "boards", identifier),
             )
         else:
             connection.execute(
-                "INSERT INTO jobs (id, company, title, location, url, description, first_seen, last_seen, posted)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO jobs (id, company, title, location, url, description, first_seen, last_seen, posted, source)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     identifier,
                     job.get("company", ""),
@@ -298,6 +351,7 @@ def upsert_jobs(connection: sqlite3.Connection, jobs: list[dict]) -> list[str]:
                     stamp,
                     stamp,
                     job.get("posted") or None,
+                    job.get("source") or "boards",
                 ),
             )
             fresh.append(identifier)
@@ -564,6 +618,36 @@ def dismissed_jobs(connection: sqlite3.Connection) -> dict[str, dict]:
         match = by_key.get(job_key(row["company"], row["title"]))
         if match:
             out[row["id"]] = match
+    return out
+
+
+def promote_job(connection: sqlite3.Connection, job: str) -> None:
+    """Put a job scored under the line on the shortlist by hand, so it can be tailored and approved like the rest."""
+    if connection.execute("SELECT 1 FROM jobs WHERE id = ?", (job,)).fetchone() is None:
+        raise LookupError("המשרה לא נמצאה במאגר")
+    if job in settled_ids(connection):
+        raise LookupError("המשרה כבר הוגשה או הוסרה")
+    connection.execute("INSERT OR REPLACE INTO promoted (job_id, promoted_at) VALUES (?, ?)", (job, now()))
+    connection.commit()
+
+
+def promoted_ids(connection: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in connection.execute("SELECT job_id FROM promoted")}
+
+
+def record_approval(connection: sqlite3.Connection, identifier: str, problems: list[str]) -> None:
+    connection.execute("INSERT OR REPLACE INTO approvals (job_id, at, problems) VALUES (?, ?, ?)",
+                       (identifier, now(), json.dumps(problems, ensure_ascii=False)))
+    connection.commit()
+
+
+def refused_approvals(connection: sqlite3.Connection) -> dict[str, dict]:
+    """Jobs whose last approval wrote nothing, with when and why."""
+    out = {}
+    for row in connection.execute("SELECT * FROM approvals"):
+        problems = json.loads(row["problems"])
+        if problems:
+            out[row["job_id"]] = {"at": row["at"], "problems": problems}
     return out
 
 

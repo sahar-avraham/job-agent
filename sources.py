@@ -20,7 +20,7 @@ BOARD_LABELS = {"comeet": "Comeet", "greenhouse": "Greenhouse", "workday": "Work
                 "workable": "Workable", "smartrecruiters": "SmartRecruiters",
                 "amazon": "Amazon", "eightfold": "Eightfold",
                 "elbit": "Elbit", "bob": "Bob", "oracle": "Oracle",
-                "google": "Google", "devjobs": "DevJobs"}
+                "google": "Google", "apple": "Apple", "devjobs": "DevJobs"}
 
 CSS = """
 .sources table { margin-bottom:1.6rem; }
@@ -81,9 +81,9 @@ def texts_block(texts: dict) -> str:
     else:
         last = (texts.get("last_read") or "").split(" ")
         state = f"תקין. בהרצה האחרונה נקראו {last[1]} דפים." if len(last) == 2 else "עוד לא נקרא."
-    return ('<h2>תיאורים למשרות מהמפה</h2>'
-            '<p class="meta">משרה מהמפה מדורגת רק אחרי שנמצא לה תיאור מלא: קודם באתר DevJobs לפי מספר המשרה, '
-            'ואם אין שם, בדף המשרה בלינקדאין.</p>'
+    return ('<h2>תיאורים למשרות מהמפה ומחיפוש לינקדאין</h2>'
+            '<p class="meta">משרה מהמפה או מחיפוש לינקדאין מדורגת רק אחרי שנמצא לה תיאור מלא: קודם באתר DevJobs '
+            'לפי מספר המשרה, ואם אין שם, בדף המשרה בלינקדאין. החיפוש בלינקדאין רץ אחרי קריאת הדפים של משרות המפה.</p>'
             '<table><tbody>'
             f'<tr><td>תיאור מ־DevJobs</td><td class="num">{texts["devjobs"]}</td></tr>'
             f'<tr><td>תיאור מלינקדאין</td><td class="num">{texts["linkedin"]}</td></tr>'
