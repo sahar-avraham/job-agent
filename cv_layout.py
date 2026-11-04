@@ -49,8 +49,8 @@ ALWAYS_PROJECTS = {"P", "J"}
 EXPERIENCE_HEADER = "ZH1"
 SERVICE_HEADER = "VH1"
 
-# As many bullets as the original CV carries in each place, which is what keeps it to one page.
-MAX_BULLETS = {"P": 4, "J": 3, "A": 2, "C": 1, "Z": 4}
+# Caps each place separately, and the budget caps the whole, so the selection divides one page by the posting.
+MAX_BULLETS = {"P": 5, "J": 3, "A": 2, "C": 1, "Z": 3}
 BULLET_BUDGET = 12
 
 

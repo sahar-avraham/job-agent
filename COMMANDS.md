@@ -206,7 +206,8 @@ disagree. The bigger version is `make_evalset.py`, `rate_jobs.py` and
 - **`No module named 'pydantic'`** means `.venv` is missing or empty. Run the two
   first-time commands at the top.
 - **401 or authentication error** means Claude's login expired. Run `claude` in a
-  terminal and log in again.
+  terminal and log in again, then press "הרץ שוב את המודל" on the jobs page. It appears
+  when the last run's model calls failed, and asks the model again without collecting.
 - **The buttons do nothing** means the page was opened as a file. Use `serve.py`.
 - **Port already in use** means an old `serve.py` is still running. Close that
   terminal. Passing `--port 8778` also works, but the extension only talks to 8777.

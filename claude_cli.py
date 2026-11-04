@@ -93,8 +93,13 @@ def ask(prompt: str, model: str = "opus", timeout: int = TIMEOUT_SECONDS) -> tup
         raise ClaudeCliError(f"the claude command did not answer within {timeout} seconds") from error
 
     if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()[:400]
-        raise ClaudeCliError(f"the claude command exited with {completed.returncode}: {detail}")
+        detail = (completed.stderr or completed.stdout or "").strip()
+        # Take the reason out of the JSON the command prints, since the envelope around it fills a shortened message.
+        try:
+            detail = json.loads(detail).get("result") or detail
+        except (ValueError, AttributeError):
+            pass
+        raise ClaudeCliError(f"the claude command exited with {completed.returncode}: {detail[:400]}")
 
     envelope = json.loads(completed.stdout) if completed.stdout.strip() else {}
     if isinstance(envelope, dict) and envelope.get("is_error"):

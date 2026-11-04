@@ -100,6 +100,9 @@ h2 { font-size:1.2rem; margin:2.5rem 0 1rem; padding-bottom:.4rem;
 .bar-count { color:var(--soft); font-size:.87rem; margin-inline-end:auto; flex:1 1 14rem; min-width:0; }
 .bar-count .names { color:var(--ink); }
 .bar-actions button.clear { background:transparent; color:var(--soft); border:1px solid var(--rule); }
+.retry-model { font:inherit; font-size:.87rem; font-weight:600; cursor:pointer; border:0; border-radius:5px;
+  padding:.42rem .9rem; margin-top:.9rem; background:var(--accent); color:var(--paper); }
+.retry-model:disabled { opacity:.45; cursor:default; }
 .log { font-family:"IBM Plex Mono",monospace; direction:ltr; unicode-bidi:isolate; text-align:left;
   font-size:.76rem; background:var(--code-bg); color:var(--code-fg); border-radius:6px;
   padding:.7rem .9rem; margin-top:.7rem; max-height:13rem; overflow:auto; white-space:pre-wrap; display:none; }
@@ -506,6 +509,8 @@ OPEN_CACHE: dict[str, tuple[float, set[str] | None]] = {}
 OPEN_CACHE_SECONDS = 3600
 # The lowest score still listed under the shortlist, with a link, for a second look.
 NEAR_MISS = 30
+# Keep this group open on the page, since a good job missed costs far more than a weak one looked at.
+LOW_ODDS = 35
 
 
 def closed_since(jobs: list[dict], ask: bool = True) -> set[str]:
@@ -695,22 +700,30 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
     ) if removed else ""
 
     # Just under the line the score is least sure, so those jobs keep a link, their main gap and a way out.
-    near = [j for j in rest if j["score"] >= NEAR_MISS]
-    near_rows = "".join(
-        f'<tr><td class="num">{j["score"]}</td><td class="ltr">{esc(j["company"])}</td>'
-        f'<td class="ltr"><a href="{esc(j["url"])}" target="_blank" rel="noopener">{esc(j["title"])}</a> {age_badge(j)}</td>'
-        f'<td class="ltr gap">{esc(j["gaps"][0]) if j["gaps"] else ""}</td>'
-        f'<td class="served-only"><button type="button" class="promote-row" data-id="{esc(j["id"])}">העלה לרשימה</button> '
-        f'<button type="button" class="dismiss-row" data-id="{esc(j["id"])}">הסר</button></td></tr>'
-        for j in near
-    )
+    low_odds = [j for j in rest if j["score"] >= LOW_ODDS]
+    near = [j for j in rest if NEAR_MISS <= j["score"] < LOW_ODDS]
+
+    def under_line_table(group: list[dict]) -> str:
+        rows = "".join(
+            f'<tr><td class="num">{j["score"]}</td><td class="ltr">{esc(j["company"])}</td>'
+            f'<td class="ltr"><a href="{esc(j["url"])}" target="_blank" rel="noopener">{esc(j["title"])}</a> {age_badge(j)}</td>'
+            f'<td class="ltr gap">{esc(j["gaps"][0]) if j["gaps"] else ""}</td>'
+            f'<td class="served-only"><button type="button" class="promote-row" data-id="{esc(j["id"])}">העלה לרשימה</button> '
+            f'<button type="button" class="dismiss-row" data-id="{esc(j["id"])}">הסר</button></td></tr>'
+            for j in group
+        )
+        return ('<p class="meta">ליד כל אחת הפער העיקרי שהמודל מצא. משרה שהועלתה לרשימה מופיעה למעלה עם שאר המשרות, '
+                'ואפשר להכין לה קורות חיים, לאשר ולהגיש. משרה שהוסרה נשארת במאגר ולא תדורג שוב.</p>'
+                '<div class="wide-table"><table><thead><tr><th>ציון</th><th>חברה</th><th>תפקיד</th>'
+                f'<th class="gap">פער עיקרי</th><th></th></tr></thead><tbody>{rows}</tbody></table></div>')
+
+    low_odds_section = (
+        f'<details class="near-box" open><summary>סיכוי נמוך, שווה מבט: {len(low_odds)} משרות עם ציון {LOW_ODDS} עד '
+        f'{counts["threshold"] - 1}</summary>{under_line_table(low_odds)}</details>'
+    ) if low_odds else ""
     near_section = (
         f'<details class="near-box"><summary>כמעט עברו: {len(near)} משרות עם ציון {NEAR_MISS} עד '
-        f'{counts["threshold"] - 1}</summary>'
-        '<p class="meta">ליד כל אחת הפער העיקרי שהמודל מצא. משרה שהועלתה לרשימה מופיעה למעלה עם שאר המשרות, '
-        'ואפשר להכין לה קורות חיים, לאשר ולהגיש. משרה שהוסרה נשארת במאגר ולא תדורג שוב.</p>'
-        '<div class="wide-table"><table><thead><tr><th>ציון</th><th>חברה</th><th>תפקיד</th>'
-        f'<th class="gap">פער עיקרי</th><th></th></tr></thead><tbody>{near_rows}</tbody></table></div></details>'
+        f'{LOW_ODDS - 1}</summary>{under_line_table(near)}</details>'
     ) if near else ""
     # Jobs known only from the Tech Map's list or LinkedIn's search are not scored until their full text is found.
     waiting = waiting or []
@@ -727,8 +740,11 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
         '<div class="wide-table"><table><thead><tr><th>חברה</th><th>תפקיד</th><th>עיר</th><th>מקור</th></tr></thead>'
         f'<tbody>{waiting_rows}</tbody></table></div></details>'
     ) if waiting else ""
-    below = len(rest) - len(near)
+    below = len(rest) - len(low_odds) - len(near)
     below_note = f'<p class="meta">עוד {below} משרות קיבלו פחות מ־{NEAR_MISS} ולא מוצגות.</p>' if below else ""
+    # Show the button only after failures, so it cannot be pressed with nothing to do.
+    retry_button = (f'<button type="button" id="btn-retry-model" class="retry-model served-only">'
+                    f'הרץ שוב את המודל על {counts["failed"]} שנכשלו</button>') if counts.get("failed") else ""
 
     return f"""<!doctype html>
 <html lang="he" dir="rtl"><head><meta charset="utf-8">
@@ -746,6 +762,7 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
     <span>עברו את המודל<b>{counts['passed']}</b></span>
   </div>
   {run_details(counts.get('details'), counts['scored'], counts['passed'])}
+  {retry_button}
 </header>
 
 <div class="bar-actions" id="actions">
@@ -769,6 +786,8 @@ def render(jobs: list[dict], new_ids: set[str], counts: dict, rubric: str, alive
 <div id="shortlist">{blocks}</div>
 
 <div class="outside-focus">
+{low_odds_section}
+
 {removed_section}
 
 {near_section}
@@ -823,6 +842,7 @@ def write(db: str, profile_path: str, out: str, threshold: int, open_browser: bo
         "threshold": threshold,
         "ran_at": datetime.fromisoformat(run["finished_at"]).astimezone() if run else None,
         "scored": run["scored"] if run else 0,
+        "failed": run["failed"] if run else 0,
         "details": json.loads(run["details"]) if run and run["details"] else None,
     }
     # The last run's funnel is counted from what it left behind, so a run from before these counts were shown has them too.

@@ -4,10 +4,16 @@ A site that changes its pages breaks these readers quietly, so each reader is he
 was written for. Run from the project folder: python -m unittest discover tests
 """
 
+import io
+import json
 import pathlib
 import sys
+import tempfile
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import date
+from types import SimpleNamespace
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -17,6 +23,8 @@ import filter_jobs  # noqa: E402
 import linkedin  # noqa: E402
 import run  # noqa: E402
 import scout  # noqa: E402
+import score_job  # noqa: E402
+import store  # noqa: E402
 
 TEXT = "Build backend services in Python and Java, own them in production, and work with the product team. " * 4
 
@@ -155,6 +163,50 @@ class Rules(unittest.TestCase):
     def test_embedded_roles_pass_only_when_junior(self):
         self.assertIsNotNone(self.reason("Embedded Software Engineer"))
         self.assertIsNone(self.reason("Junior Embedded Software Engineer"))
+
+
+class NotAJob(unittest.TestCase):
+    answer = {"fit": 25, "desirability": 10, "odds": 75, "score": 60, "decision": "review", "reasons": [], "matched": [],
+              "gaps": [], "confidence": "high"}
+
+    def test_a_posting_with_no_employment_scores_zero(self):
+        verdict = score_job.Verdict.model_validate({**self.answer, "is_job": False})
+        self.assertEqual((verdict.score, verdict.decision), (0, "skip"))
+
+    def test_an_answer_without_the_field_keeps_its_score(self):
+        self.assertEqual(score_job.Verdict.model_validate(self.answer).score, 60)
+
+
+class ModelRetry(unittest.TestCase):
+    def test_answers_go_on_the_last_run_without_collecting(self):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as folder:
+            db, profile = str(pathlib.Path(folder) / "t.db"), pathlib.Path(folder) / "profile.md"
+            profile.write_text("profile", encoding="utf-8")
+            connection = store.connect(db)
+            jobs = [{"company": "Example", "title": f"Junior Backend Developer {name}", "location": "Tel Aviv, Israel",
+                     "url": f"https://example.com/{name}", "description": TEXT, "posted": ""} for name in ("good", "bad")]
+            store.upsert_jobs(connection, jobs)
+            number = store.start_run(connection)
+            store.finish_run(connection, number, scored=0, failed=2,
+                             details=json.dumps({"failed_new": 2, "scored_new": 0, "above": 0}))
+
+            def answer(_, job, __):
+                if job["url"].endswith("bad"):
+                    raise RuntimeError("still failing")
+                verdict = {"score": 70, "decision": "apply"}
+                return SimpleNamespace(model_dump=lambda: verdict), None
+
+            with mock.patch.object(run, "collect", side_effect=AssertionError("collected")), \
+                    mock.patch.object(run, "score_via_cli", answer), \
+                    mock.patch.object(run, "write_missing_drafts"), mock.patch.object(run.report, "write"), \
+                    redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                run.retry_model(db, str(profile))
+
+            row = connection.execute("SELECT scored, failed, details FROM runs WHERE id = ?", (number,)).fetchone()
+            connection.close()
+        self.assertEqual((row["scored"], row["failed"]), (1, 1))
+        details = json.loads(row["details"])
+        self.assertEqual((details["scored_new"], details["failed_new"], details["above"]), (1, 1, 1))
 
 
 if __name__ == "__main__":

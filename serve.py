@@ -73,6 +73,8 @@ def work(action: str, ids: list[str], options) -> None:
                 run_tailor(ids, options)
             elif action == "submit":
                 run_submit(ids, options)
+            elif action == "retry":
+                run_retry(options)
             else:
                 run_approve(ids, options)
     except Exception as error:
@@ -111,6 +113,13 @@ def run_submit(ids: list[str], options) -> None:
         if index < len(ids):
             time.sleep(BATCH_PAUSE_SECONDS)
     note(f"{sent} of {len(ids)} sent")
+
+
+def run_retry(options) -> None:
+    """Ask the model again about what the last run left unanswered, and read the mailbox again for the same reason."""
+    import run
+    mail_check(options, True)
+    run.retry_model(options.db, options.profile, options.model)
 
 
 def run_tailor(ids: list[str], options) -> None:
@@ -547,6 +556,13 @@ def make_handler(options):
                 ids, action = [payload.get("job_id", "")], "submit"
             elif self.path == "/api/submit-batch":
                 action = "submit"
+            elif self.path == "/api/retry-model":
+                connection = store.connect(options.db)
+                running = store.run_in_progress(connection)
+                connection.close()
+                if running:
+                    return self.answer(409, {"error": "הריצה היומית עדיין רצה. חכה שתסתיים ולחץ שוב."})
+                action = "retry"
             else:
                 action = "approve" if self.path.startswith("/api/approve") else "tailor"
             threading.Thread(target=work, args=(action, ids, options), daemon=True).start()

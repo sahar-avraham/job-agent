@@ -121,6 +121,83 @@ def mixed(jobs: list[dict], seed: int) -> list[dict]:
     return out
 
 
+def score_jobs(connection, jobs: list[dict], profile: str, rubric: str, model: str, workers: int) -> tuple[set[str], int]:
+    """Ask the model about each job and store the answers, returning the ids answered and how many failed."""
+    scored_ids: set[str] = set()
+    failed = 0
+
+    def one(job: dict):
+        try:
+            verdict, _ = score_via_cli(profile, job, model)
+            return job, verdict.model_dump(), ""
+        except Exception as error:
+            return job, None, str(error)[:160]
+
+    if jobs:
+        print()
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            for job, verdict, error in pool.map(one, jobs):
+                if verdict is None:
+                    failed += 1
+                    print(f"  !  {job['company']} {job['title'][:40]}: {error}", file=sys.stderr)
+                    continue
+                store.record_score(connection, store.job_id(job["url"]), rubric, model, verdict)
+                scored_ids.add(store.job_id(job["url"]))
+                print(f"{verdict['score']:>3}  {verdict['decision']:<7} {job['company'][:14]:<15} {job['title'][:44]}")
+    return scored_ids, failed
+
+
+def write_missing_drafts(connection, shortlist: list[dict], model: str, limit: int) -> None:
+    """Write drafts for the jobs above 50 that lack one, so they are ready when the page is opened."""
+    out = pathlib.Path("applications")
+    drafts = tailor.untailored(connection, shortlist, out)[:limit]
+    if drafts:
+        print(f"\ntailoring {len(drafts)} drafts for jobs above 50 that have none\n")
+        tailor.write_drafts(drafts, tailor.load_facts(pathlib.Path("facts.md")), model, out)
+
+
+def retry_model(db: str, profile_path: str, model: str = MODEL_CLI, limit: int = 25, workers: int = 4,
+                tailor_limit: int = 10) -> None:
+    """Ask the model again about the last collection's unanswered jobs, and put the results on the last run."""
+    profile = pathlib.Path(profile_path).read_text(encoding="utf-8")
+    rubric = store.rubric_id(profile)
+    connection = store.connect(db)
+    try:
+        run = connection.execute("SELECT * FROM runs WHERE finished_at IS NOT NULL ORDER BY id DESC LIMIT 1").fetchone()
+        latest = connection.execute("SELECT MAX(last_seen) FROM jobs").fetchone()[0]
+        seen = [dict(row) for row in connection.execute("SELECT * FROM jobs WHERE last_seen = ?", (latest,))]
+        kept = [job for job in seen if filter_jobs.rejection_reason(job, filter_jobs.MAX_YEARS_REQUIRED) is None]
+        kept_ids = [job["id"] for job in kept]
+        new_kept = {job["id"] for job in kept if job["first_seen"] == latest}
+        settled = store.settled_ids(connection)
+        todo = [job for job in store.unscored(connection, kept_ids, rubric)
+                if job["id"] not in settled and not scout.is_map_job(job)]
+        print(f"{len(todo)} need an answer from the model")
+
+        batch = todo[:limit]
+        scored_ids, failed = score_jobs(connection, batch, profile, rubric, model, workers)
+        shortlist = store.ranked(connection, rubric, minimum=50, ids=kept_ids)
+
+        if run:
+            details = json.loads(run["details"]) if run["details"] else None
+            if details:
+                details.update(
+                    scored_new=details.get("scored_new", 0) + len(scored_ids & new_kept),
+                    scored_old=details.get("scored_old", 0) + len(scored_ids - new_kept),
+                    failed_new=sum(1 for job in batch if job["id"] in new_kept) - len(scored_ids & new_kept),
+                    over_limit=sum(1 for job in todo[limit:] if job["id"] in new_kept),
+                    above=details.get("above", 0) + sum(1 for job in shortlist if job["id"] in scored_ids))
+            store.finish_run(connection, run["id"], scored=run["scored"] + len(scored_ids), failed=failed,
+                             details=json.dumps(details) if details else run["details"])
+        print(f"\n{len(scored_ids)} scored, {failed} failed")
+
+        write_missing_drafts(connection, shortlist, model, tailor_limit)
+        print()
+        report.write(db, profile_path, "report.html", 50)
+    finally:
+        connection.close()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Collect, filter and score in one pass.")
     parser.add_argument("--region", default="israel", help="a region name from fetch_jobs.REGIONS")
@@ -217,28 +294,8 @@ def main() -> int:
         todo = mixed(todo, args.seed)
     funnel["over_limit"] = sum(1 for j in todo[args.limit:] if store.job_id(j["url"]) in new_kept)
     todo = todo[: args.limit]
-    scored = failed = 0
-    scored_ids: set[str] = set()
-
-    def one(job: dict):
-        try:
-            verdict, _ = score_via_cli(profile, job, args.model)
-            return job, verdict.model_dump(), ""
-        except Exception as error:
-            return job, None, str(error)[:160]
-
-    if todo:
-        print()
-        with ThreadPoolExecutor(max_workers=args.workers) as pool:
-            for job, verdict, error in pool.map(one, todo):
-                if verdict is None:
-                    failed += 1
-                    print(f"  !  {job['company']} {job['title'][:40]}: {error}", file=sys.stderr)
-                    continue
-                store.record_score(connection, store.job_id(job["url"]), rubric, args.model, verdict)
-                scored_ids.add(store.job_id(job["url"]))
-                scored += 1
-                print(f"{verdict['score']:>3}  {verdict['decision']:<7} {job['company'][:14]:<15} {job['title'][:44]}")
+    scored_ids, failed = score_jobs(connection, todo, profile, rubric, args.model, args.workers)
+    scored = len(scored_ids)
 
     shortlist = store.ranked(connection, rubric, minimum=50, ids=kept_ids)
     fresh_pass = sum(1 for job in todo if any(s["id"] == store.job_id(job["url"]) for s in shortlist))
@@ -260,14 +317,9 @@ def main() -> int:
     if not shortlist:
         print("  nothing above 50 this time")
 
-    # Drafts are written for the jobs above 50 that lack one, so they are ready when the page is opened.
     # Approval stays a click on the page, since it is where the drafts are read before anything is sent.
     if not args.no_tailor:
-        out = pathlib.Path("applications")
-        drafts = tailor.untailored(connection, shortlist, out)[: args.tailor_limit]
-        if drafts:
-            print(f"\ntailoring {len(drafts)} drafts for jobs above 50 that have none\n")
-            tailor.write_drafts(drafts, tailor.load_facts(pathlib.Path("facts.md")), args.model, out)
+        write_missing_drafts(connection, shortlist, args.model, args.tailor_limit)
 
     if not args.no_report:
         print()

@@ -185,7 +185,7 @@
   let polling = null;
 
   function setBusy(busy) {
-    document.querySelectorAll(".bar-actions button").forEach((b) => (b.disabled = busy));
+    document.querySelectorAll(".bar-actions button, #btn-retry-model").forEach((b) => (b.disabled = busy));
   }
 
   function poll() {
@@ -208,10 +208,14 @@
   async function send(path) {
     const ids = picks();
     if (!ids.length) return alert("לא סומנה אף משרה. סמן את התיבה ליד המשרה ולחץ שוב.");
+    start(path, { ids });
+  }
+
+  async function start(path, body) {
     setBusy(true);
     log.classList.add("on");
     log.textContent = "starting...";
-    const { ok, data } = await post(path, { ids });
+    const { ok, data } = await post(path, body);
     if (!ok) {
       setBusy(false);
       log.textContent = data.error === "busy" ? "פעולה קודמת עדיין רצה. חכה שתסתיים ולחץ שוב." : data.error || "השרת לא התחיל את הפעולה.";
@@ -271,6 +275,8 @@
   if (formsButton) formsButton.onclick = openForms;
   document.getElementById("btn-approve").onclick = () => send("/api/approve");
   document.getElementById("btn-submit-batch").onclick = submitBatch;
+  const retryButton = document.getElementById("btn-retry-model");
+  if (retryButton) retryButton.onclick = () => start("/api/retry-model", {});
 
   // Go through the companies with several jobs one at a time: only that company's jobs show, with
   // what was already sent there, and the usual buttons on each card decide them. The place is kept

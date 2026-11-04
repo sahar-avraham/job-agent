@@ -17,7 +17,7 @@ import pathlib
 import re
 import sqlite3
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 DRAFTS = pathlib.Path("applications")  # where tailor.py writes drafts, relative to the project folder
 DB_PATH = "job_agent.db"
@@ -299,6 +299,14 @@ def finish_run(connection: sqlite3.Connection, run: int, **counts: int) -> None:
         (now(), *counts.values(), run),
     )
     connection.commit()
+
+
+def run_in_progress(connection: sqlite3.Connection, hours: int = 3) -> bool:
+    """Whether the latest run started recently and has not finished; an older unfinished one was cut off."""
+    row = connection.execute("SELECT started_at, finished_at FROM runs ORDER BY id DESC LIMIT 1").fetchone()
+    if row is None or row["finished_at"]:
+        return False
+    return datetime.now(timezone.utc) - datetime.fromisoformat(row["started_at"]) < timedelta(hours=hours)
 
 
 def remember_found(connection: sqlite3.Connection, cards: list[dict]) -> int:

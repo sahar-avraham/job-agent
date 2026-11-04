@@ -20,7 +20,7 @@ import pathlib
 import sys
 from typing import Literal
 
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 import claude_cli
 
@@ -44,6 +44,14 @@ class Verdict(BaseModel):
     matched: list[str] = Field(description="Requirements the profile already satisfies.")
     gaps: list[str] = Field(description="Requirements the profile does not satisfy.")
     confidence: Literal["low", "medium", "high"]
+    is_job: bool = Field(default=True, description="False when the posting offers no employment, such as a marketplace that pays for submitted code.")
+
+    @model_validator(mode="after")
+    def zero_what_is_not_a_job(self):
+        """Score a posting with no employment at zero, since nothing in it can lower its odds."""
+        if not self.is_job:
+            self.score, self.decision = 0, "skip"
+        return self
 
 
 INSTRUCTIONS = """You screen job postings for one candidate and score how well each fits.

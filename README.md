@@ -196,6 +196,7 @@ The pages are in Hebrew. These are the names used above:
 | Submit | הגש |
 | Submit ticked | הגש את המסומנות |
 | Fill forms | פתח ומלא טפסים בכרום |
+| Run the model again, shown after a run whose model calls failed | הרץ שוב את המודל |
 | I applied | הגשתי |
 | Remove | לא מעניין, הסר |
 | Confirm a mail | נכון, רשום |

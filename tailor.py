@@ -82,6 +82,11 @@ headers: never select them. What you decide is the headline, which summary lines
 and in which order, which bullets under each project and in which order, and which
 lines of the previous role.
 
+Only a limited number of lines print: the main project shows its introducing line and
+four more, the most recent project shows three, the other projects two and one, and
+the previous role three, with at most eleven of these lines in all. Past that the
+previous role gives up lines first, so put what matters first.
+
 The headline and the first summary line decide how the candidate is read. Pick the
 headline closest to the role.
 
