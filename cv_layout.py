@@ -148,13 +148,11 @@ def build(chosen, facts: dict[str, str]) -> Layout:
     # The line that says what the role was leads, as a project's first line does.
     role = [i for i in role if i == "Z1"] + [i for i in role if i != "Z1"]
     experience = [Block(facts.get(EXPERIENCE_HEADER, ""), [facts[i] for i in role[:MAX_BULLETS["Z"]]])]
-    # Military service is one line that every Israeli recruiter looks for, so it is always printed.
+    # Print the service block whenever the fact file has one.
     if SERVICE_HEADER in facts:
         experience.append(Block(facts[SERVICE_HEADER], [facts[i] for i in ("V1",) if i in facts]))
 
-    # One page is the whole point, and the page holds about this many bullets. When a selection
-    # asks for more, the previous role gives up lines first, down to two, since the projects carry the
-    # development case; then the longest project gives one up at a time, never emptying one.
+    # Keep the CV to one page by trimming the previous role first, down to two lines, then the longest project one line at a time.
     blocks = projects + experience
     while sum(len(b.bullets) for b in blocks) > BULLET_BUDGET:
         if len(experience[0].bullets) > 2:
